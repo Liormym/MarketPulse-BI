@@ -1,0 +1,45 @@
+version: "3.9"
+
+# Local container dev loop — run this once Docker Desktop is installed, before
+# moving to the Kubernetes manifests in k8s/. Mirrors the same two components
+# the spec's architecture describes: a Postgres StatefulSet-equivalent and the
+# Python pipeline container.
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-marketpulse}
+      POSTGRES_USER: ${DB_USER:-marketpulse}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - marketpulse_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-marketpulse}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pipeline:
+    build:
+      context: .
+      dockerfile: docker/pipeline.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-marketpulse}
+      DB_USER: ${DB_USER:-marketpulse}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - ./data/raw:/app/data/raw
+    # One-shot run by default (mirrors the CronJob->Job->Pod model). Override
+    # the command to `apply_migrations.py` / `seed_dimensions.py` for setup.
+    command: ["python", "-m", "marketpulse.pipeline"]
+
+volumes:
+  marketpulse_pgdata:

@@ -1,0 +1,37 @@
+# Spec §4: CronJob -> Job -> Pod -> Python container hierarchy.
+# Default schedule: 21:30 UTC on weekdays (after major US market close).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: marketpulse-pipeline
+  namespace: marketpulse
+spec:
+  schedule: "30 21 * * 1-5"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900 # 15 min, matches the spec's performance KPI
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: pipeline
+              image: marketpulse-pipeline:latest # build locally with docker/pipeline.Dockerfile
+              envFrom:
+                - secretRef:
+                    name: marketpulse-db-credentials
+              env:
+                - name: DB_HOST
+                  value: postgres.marketpulse.svc.cluster.local
+                - name: DB_PORT
+                  value: "5432"
+              resources:
+                requests:
+                  cpu: "250m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "1"
+                  memory: "1.5Gi" # FinBERT inference needs headroom over a bare Python process
