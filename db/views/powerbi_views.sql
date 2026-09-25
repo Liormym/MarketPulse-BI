@@ -13,8 +13,10 @@ SELECT
     f."Volume",
     f."Close" - LAG(f."Close") OVER (PARTITION BY f."AssetKey" ORDER BY d."Date") AS "DailyChange",
     ROUND(
-        (f."Close" - LAG(f."Close") OVER (PARTITION BY f."AssetKey" ORDER BY d."Date"))
-        / NULLIF(LAG(f."Close") OVER (PARTITION BY f."AssetKey" ORDER BY d."Date"), 0) * 100,
+        (
+            (f."Close" - LAG(f."Close") OVER (PARTITION BY f."AssetKey" ORDER BY d."Date"))
+            / NULLIF(LAG(f."Close") OVER (PARTITION BY f."AssetKey" ORDER BY d."Date"), 0) * 100
+        )::numeric,
         2
     ) AS "DailyReturnPct"
 FROM "FactDailyPrice" f
