@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MarketPulse BI — Market Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="brand">
+          <span class="brand-mark">MP</span>
+          <span class="brand-name">MarketPulse<strong>BI</strong></span>
+        </div>
+        <nav class="nav-links">
+          <a class="nav-link active" href="/">Dashboard</a>
+          <a class="nav-link" href="/stock/AAPL">Stock Deep-Dive</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="content">
+      <section>
+        <div class="panel-header"><h2>Macro &amp; Market Regime</h2></div>
+        <div class="macro-bar" id="macro-bar">
+          <div class="macro-tile"><div class="macro-tile-label">10Y Treasury Yield</div><div class="macro-tile-value" id="macro-10y">—</div></div>
+          <div class="macro-tile"><div class="macro-tile-label">2Y Treasury Yield</div><div class="macro-tile-value" id="macro-2y">—</div></div>
+          <div class="macro-tile"><div class="macro-tile-label">10Y-2Y Spread</div><div class="macro-tile-value" id="macro-spread">—</div></div>
+          <div class="macro-tile"><div class="macro-tile-label">Crude Oil (WTI)</div><div class="macro-tile-value" id="macro-oil">—</div></div>
+          <div class="macro-tile"><div class="macro-tile-label">Market Breadth (S5FI)</div><div class="macro-tile-value placeholder" id="macro-breadth">Not yet tracked</div></div>
+          <div class="macro-tile"><div class="macro-tile-label">AAII Sentiment</div><div class="macro-tile-value placeholder" id="macro-aaii">Not yet tracked</div></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Sector Money-Flow</h2>
+          <span class="empty-state" id="sector-asof"></span>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr><th>Sector ETF</th><th>Name</th><th>Volume Ratio</th><th>Status</th></tr>
+          </thead>
+          <tbody id="sector-table-body">
+            <tr><td colspan="4" class="empty-state">Loading…</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header"><h2>Top Movers</h2></div>
+        <div class="movers-grid" id="movers-grid">
+          <div class="empty-state">Loading…</div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Macro/sector data from FRED &amp; yfinance · click a row or card to open its deep-dive view</span>
+    </footer>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

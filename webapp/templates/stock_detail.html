@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MarketPulse BI — Stock Deep-Dive</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="brand">
+          <span class="brand-mark">MP</span>
+          <span class="brand-name">MarketPulse<strong>BI</strong></span>
+        </div>
+        <nav class="nav-links">
+          <a class="nav-link" href="/">Dashboard</a>
+          <a class="nav-link active" href="/stock/{{ default_ticker }}">Stock Deep-Dive</a>
+        </nav>
+      </div>
+
+      <div class="ticker-picker">
+        <input
+          id="ticker-search"
+          class="ticker-search"
+          type="text"
+          list="ticker-list"
+          autocomplete="off"
+          placeholder="Search ticker…"
+          value="{{ default_ticker or '' }}"
+        >
+        <datalist id="ticker-list">
+          {% for t in tickers %}
+          <option value="{{ t.ticker }}">{{ t.name }}</option>
+          {% endfor %}
+        </datalist>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="hero">
+        <div class="hero-info">
+          <div class="hero-eyebrow">Now viewing</div>
+          <h1 id="company-name">—</h1>
+          <div class="hero-ticker" id="company-ticker">—</div>
+        </div>
+
+        <div class="score-card" id="score-card">
+          <div class="score-label">Investment Score</div>
+          <div class="score-value" id="score-value">—</div>
+          <div class="score-tag" id="score-tag">—</div>
+        </div>
+      </section>
+
+      <section class="chart-panel">
+        <div class="chart-panel-header">
+          <h2>Price, SMAs &amp; Sentiment</h2>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="price-sentiment-chart"></canvas>
+        </div>
+      </section>
+
+      <div class="panel-grid">
+        <section class="panel">
+          <div class="panel-header"><h2>Technical &amp; Risk</h2></div>
+          <div id="technical-panel">
+            <div class="metric-row"><span class="metric-label">SMA 20</span><span class="metric-value" id="metric-sma20">—</span></div>
+            <div class="metric-row"><span class="metric-label">SMA 50</span><span class="metric-value" id="metric-sma50">—</span></div>
+            <div class="metric-row"><span class="metric-label">SMA 150</span><span class="metric-value" id="metric-sma150">—</span></div>
+            <div class="metric-row"><span class="metric-label">SMA 200</span><span class="metric-value" id="metric-sma200">—</span></div>
+            <div class="metric-row"><span class="metric-label">ATR (14)</span><span class="metric-value" id="metric-atr">—</span></div>
+            <div class="metric-row"><span class="metric-label">Avg. Volume (20d)</span><span class="metric-value" id="metric-avgvol">—</span></div>
+            <div class="metric-row"><span class="metric-label">Latest Gap</span><span class="metric-value" id="metric-gap">—</span></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header"><h2>Positioning &amp; Governance</h2></div>
+          <div id="governance-panel">
+            <div class="metric-row"><span class="metric-label">Short Interest (% of Float)</span><span class="metric-value" id="metric-short">—</span></div>
+            <div id="insider-alert"></div>
+            <div id="insider-list" style="margin-top: 10px;"></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header"><h2>Macro Alignment</h2></div>
+          <div id="macro-alignment-panel">
+            <div class="empty-state">No sector mapping for this asset</div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <span>Live price, sentiment &amp; technicals from PostgreSQL · Investment Score is a placeholder — scoring engine not yet built</span>
+    </footer>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="{{ url_for('static', filename='js/stock_detail.js') }}"></script>
+</body>
+</html>
