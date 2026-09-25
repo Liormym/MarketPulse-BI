@@ -1,12 +1,9 @@
-# MarketPulse BI watchlist — replaced with Lior's real Yahoo Finance
-# portfolios/watchlists (screenshots shared in session), deduplicated across
-# all lists. Includes ETFs, one benchmark index, and two crypto pairs per his
-# choice — these don't fit the "company + sector" news-sentiment model as
-# cleanly as single stocks, but yfinance prices them fine.
-#
-# A few tickers I could not confidently identify are marked "# VERIFY" below —
-# company_name is left as the raw ticker and sector as null for those; fix them
-# up here once confirmed (no code changes needed either way).
+# MarketPulse BI watchlist — Lior's real Yahoo Finance portfolios/watchlists,
+# deduplicated across all lists. Includes ETFs, one benchmark index, and two
+# crypto pairs per his choice — these don't fit the "company + sector"
+# news-sentiment model as cleanly as single stocks, but yfinance prices them
+# fine. All 82 tickers verified (6 were initially uncertain: AIP, GNRS.TA,
+# KEEL, ORL.TA, SPCX, VRDS.TA — confirmed via web search).
 assets:
   - ticker: AAOI
     company_name: Applied Optoelectronics, Inc.
@@ -20,7 +17,7 @@ assets:
   - ticker: AFRM
     company_name: Affirm Holdings, Inc.
     sector: Financials
-  - ticker: AIP  # VERIFY — believed to be Arteris, Inc. (semiconductor IP)
+  - ticker: AIP
     company_name: Arteris, Inc.
     sector: Technology
   - ticker: AMD
@@ -89,9 +86,9 @@ assets:
   - ticker: GLW
     company_name: Corning Incorporated
     sector: Technology
-  - ticker: GNRS.TA  # VERIFY — could not confidently identify this TASE ticker
-    company_name: GNRS.TA
-    sector: null
+  - ticker: GNRS.TA
+    company_name: Generation Capital Ltd
+    sector: Financials
   - ticker: GOOG
     company_name: Alphabet Inc. (Class C)
     sector: Communication Services
@@ -119,9 +116,9 @@ assets:
   - ticker: IREN
     company_name: IREN Limited
     sector: Technology
-  - ticker: KEEL  # VERIFY — could not confidently identify this ticker
-    company_name: KEEL
-    sector: null
+  - ticker: KEEL
+    company_name: Keel Infrastructure Corp.
+    sector: Technology
   - ticker: KOSPI.KS
     company_name: KOSPI Composite Index
     sector: Index
@@ -173,9 +170,9 @@ assets:
   - ticker: ORCL
     company_name: Oracle Corporation
     sector: Technology
-  - ticker: ORL.TA  # VERIFY — could not confidently identify this TASE ticker
-    company_name: ORL.TA
-    sector: null
+  - ticker: ORL.TA
+    company_name: Oil Refineries Ltd. (Bazan)
+    sector: Energy
   - ticker: PLTR
     company_name: Palantir Technologies Inc.
     sector: Technology
@@ -212,9 +209,9 @@ assets:
   - ticker: SOUN
     company_name: SoundHound AI, Inc.
     sector: Technology
-  - ticker: SPCX  # VERIFY — could not confidently identify this ticker (possibly a pre-IPO/private-markets tracker symbol)
-    company_name: SPCX
-    sector: null
+  - ticker: SPCX
+    company_name: Space Exploration Technologies Corp. (SpaceX)
+    sector: Industrials
   - ticker: SPMO
     company_name: Invesco S&P 500 Momentum ETF
     sector: ETF
@@ -236,9 +233,9 @@ assets:
   - ticker: V
     company_name: Visa Inc.
     sector: Financials
-  - ticker: VRDS.TA  # VERIFY — could not confidently identify this TASE ticker
-    company_name: VRDS.TA
-    sector: null
+  - ticker: VRDS.TA
+    company_name: Veridis Environment Ltd
+    sector: Utilities
   - ticker: VRT
     company_name: Vertiv Holdings Co
     sector: Technology
