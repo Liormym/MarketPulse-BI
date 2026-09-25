@@ -1,15 +1,18 @@
-"""One-time backfill: downloads ~2 years of daily OHLCV history for every
-watchlisted ticker via yfinance and idempotently upserts it into
-FactDailyPrice (and any missing DimDate rows it needs).
+"""One-time backfill: downloads daily OHLCV history for every watchlisted
+ticker via yfinance and idempotently upserts it into FactDailyPrice (and
+any missing DimDate rows it needs).
 
 Why: the regular pipeline run only pulls a short trailing window, which
 isn't enough history for standard-length technical indicators (RSI-14,
-SMA-150/200) feeding the Investment Score. This script is a separate,
-one-time top-up — not part of the recurring pipeline.
+SMA-150/200) feeding the Investment Score, or for the deep-dive chart's
+5Y/Max timeframe buttons. This script is a separate, one-time top-up —
+not part of the recurring pipeline.
 
 Safe to re-run: (AssetKey, DateKey) upserts never create duplicates.
 
-Usage: PYTHONPATH=src .venv/bin/python scripts/backfill_historical_prices.py [--days N]
+Usage:
+  PYTHONPATH=src .venv/bin/python scripts/backfill_historical_prices.py [--days N]
+  PYTHONPATH=src .venv/bin/python scripts/backfill_historical_prices.py --period max
 """
 import argparse
 import sys
@@ -50,6 +53,12 @@ def main() -> None:
     parser.add_argument(
         "--days", type=int, default=730, help="Calendar days of history to fetch (default: 730, ~2 years)"
     )
+    parser.add_argument(
+        "--period",
+        type=str,
+        default=None,
+        help="yfinance period string (e.g. 'max') - overrides --days when given",
+    )
     args = parser.parse_args()
 
     engine = get_engine()
@@ -57,9 +66,10 @@ def main() -> None:
     with engine.connect() as conn:
         asset_keys = get_asset_key_map(conn)
     tickers = sorted(asset_keys.keys())
-    print(f"Fetching {args.days}d of history for {len(tickers)} tickers via yfinance...")
+    label = args.period if args.period else f"{args.days}d"
+    print(f"Fetching {label} of history for {len(tickers)} tickers via yfinance...")
 
-    records, failed = fetch_prices(tickers, lookback_days=args.days)
+    records, failed = fetch_prices(tickers, lookback_days=args.days, period=args.period)
     print(f"Fetched {len(records)} price rows ({len(failed)} tickers failed)")
 
     with engine.begin() as conn:
