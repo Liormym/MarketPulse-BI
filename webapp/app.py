@@ -1,8 +1,11 @@
-"""MarketPulse BI — Flask front-end.
+"""MarketPulse BI — Flask front-end. Two screens:
 
-Reads real tickers, prices, and sentiment from PostgreSQL (DimAsset,
-FactDailyPrice, FactSentiment, joined on DimDate), and computes the
-Investment Score from that same data via marketpulse.scoring.
+  /              Market Risk & Macro Dashboard (yields, oil, sector flows, top movers)
+  /stock/<ticker>  Stock deep-dive (price/sentiment chart, technicals, positioning, macro alignment)
+
+The Investment Score (marketpulse.scoring) stays a placeholder pending the
+weighted-sentiment/volatility math discussion - kept modular so the exact
+formula can be swapped in later without touching the routes.
 """
 import sys
 from pathlib import Path
@@ -13,29 +16,49 @@ if SRC_PATH not in sys.path:
 
 from flask import Flask, jsonify, render_template  # noqa: E402
 
-from db import get_price_sentiment_history, get_tickers  # noqa: E402
+import db  # noqa: E402
 from marketpulse.scoring import SENTIMENT_LOOKBACK_DAYS, compute_investment_score  # noqa: E402
 
 app = Flask(__name__)
 
 
 @app.route("/")
-def index():
-    tickers = get_tickers()
-    default_ticker = tickers[0]["ticker"] if tickers else None
-    return render_template("index.html", tickers=tickers, default_ticker=default_ticker)
+def dashboard():
+    return render_template("dashboard.html")
+
+
+@app.route("/api/macro")
+def api_macro():
+    return jsonify(db.get_macro_snapshot() or {})
+
+
+@app.route("/api/sector-flows")
+def api_sector_flows():
+    return jsonify(db.get_sector_flows())
+
+
+@app.route("/api/movers")
+def api_movers():
+    return jsonify(db.get_top_movers())
+
+
+@app.route("/stock/<ticker>")
+def stock_detail(ticker):
+    tickers = db.get_tickers()
+    return render_template("stock_detail.html", tickers=tickers, default_ticker=ticker.upper())
 
 
 @app.route("/api/tickers")
 def api_tickers():
-    return jsonify(get_tickers())
+    return jsonify(db.get_tickers())
 
 
 @app.route("/api/stock/<ticker>")
 def api_stock(ticker: str):
-    data = get_price_sentiment_history(ticker.upper())
+    ticker = ticker.upper()
+    data = db.get_price_sentiment_history(ticker)
     if data is None:
-        return jsonify({"error": f"Unknown ticker '{ticker.upper()}'"}), 404
+        return jsonify({"error": f"Unknown ticker '{ticker}'"}), 404
 
     breakdown = compute_investment_score(
         closes=data["prices"],
@@ -48,6 +71,15 @@ def api_stock(ticker: str):
         "sentiment": breakdown.sentiment_score,
         "reason": breakdown.reason,
     }
+
+    sector_flow = None
+    if data["sector_spdr"]:
+        sector_flow = next(
+            (s for s in db.get_sector_flows() if s["ticker"] == data["sector_spdr"]), None
+        )
+    data["sector_flow"] = sector_flow
+    data["enrichment"] = db.enrich_stock(ticker)
+
     return jsonify(data)
 
 

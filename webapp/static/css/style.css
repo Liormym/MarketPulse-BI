@@ -71,6 +71,30 @@ html, body {
   color: var(--accent);
 }
 
+.nav-links {
+  display: flex;
+  gap: 4px;
+  margin-left: 24px;
+}
+
+.nav-link {
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.nav-link:hover { color: var(--text); background: var(--bg-card); }
+.nav-link.active { color: var(--accent); background: var(--accent-soft); }
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+}
+
 .ticker-picker {
   position: relative;
 }
@@ -257,8 +281,177 @@ html, body {
   border-top: 1px solid var(--border);
 }
 
+/* Macro ticker bar (dashboard) */
+.macro-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+}
+
+.macro-tile {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.macro-tile-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.macro-tile-value {
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.macro-tile-value.placeholder {
+  color: var(--text-muted);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+/* Generic panel (used for sector table, movers grid, technical/risk, etc.) */
+.panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  gap: 12px;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 20px;
+}
+
+/* Sector flow table */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.data-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-table td {
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-table tr:last-child td { border-bottom: none; }
+
+.data-table tr.clickable { cursor: pointer; transition: background 0.1s ease; }
+.data-table tr.clickable:hover { background: var(--bg-elevated); }
+
+.flow-tag {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.flow-tag.Accumulation { background: rgba(47, 212, 137, 0.15); color: var(--good); }
+.flow-tag.Distribution { background: rgba(245, 86, 106, 0.15); color: var(--bad); }
+.flow-tag.Neutral { background: rgba(139, 149, 171, 0.15); color: var(--text-muted); }
+
+.change-pct.positive { color: var(--good); }
+.change-pct.negative { color: var(--bad); }
+
+/* Movers grid */
+.movers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.mover-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.1s ease;
+}
+
+.mover-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+
+.mover-ticker { font-size: 13px; font-weight: 700; }
+.mover-price { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.mover-change { font-size: 13px; font-weight: 700; margin-top: 6px; }
+
+/* Stock deep-dive: technical/risk, positioning, macro-alignment panels */
+.metric-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.metric-row:last-child { border-bottom: none; }
+.metric-label { color: var(--text-muted); }
+.metric-value { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.alert-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  margin-top: 8px;
+}
+
+.alert-badge.warn { background: rgba(245, 185, 66, 0.15); color: var(--warn); }
+.alert-badge.ok { background: rgba(47, 212, 137, 0.12); color: var(--good); }
+
+.empty-state {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
 @media (max-width: 640px) {
   .topbar { padding: 16px; flex-direction: column; align-items: stretch; gap: 12px; }
+  .topbar-left { flex-direction: column; align-items: stretch; gap: 10px; }
+  .nav-links { margin-left: 0; }
   .ticker-search { width: 100%; }
   .content { padding: 20px; }
   .hero { flex-direction: column; }
