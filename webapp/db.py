@@ -59,6 +59,7 @@ def get_price_sentiment_history(ticker: str) -> dict | None:
         SELECT
             d."Date"                AS date,
             p."Close"               AS close,
+            p."Volume"              AS volume,
             s."AvgSentimentScore"   AS sentiment,
             t."SMA20"               AS sma20,
             t."SMA50"               AS sma50,
@@ -107,6 +108,7 @@ def get_price_sentiment_history(ticker: str) -> dict | None:
         "sector_spdr": sector_spdr,
         "dates": [r["date"].isoformat() for r in rows],
         "prices": [_round(r["close"], 2) for r in rows],
+        "volumes": [r["volume"] for r in rows],
         "sentiment": [_round(r["sentiment"], 3) for r in rows],
         "sma20": [_round(r["sma20"], 2) for r in rows],
         "sma50": [_round(r["sma50"], 2) for r in rows],
