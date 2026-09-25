@@ -119,7 +119,7 @@ assets:
   - ticker: KEEL
     company_name: Keel Infrastructure Corp.
     sector: Technology
-  - ticker: KOSPI.KS
+  - ticker: ^KS11
     company_name: KOSPI Composite Index
     sector: Index
   - ticker: KTOS
