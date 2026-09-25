@@ -192,10 +192,17 @@ function renderGovernancePanel(enrichment) {
       : "—";
 
   const txns = enrichment.insider_transactions || [];
-  const recentExecSale = txns.find((t) => t.is_executive_sale);
-  alertEl.innerHTML = recentExecSale
-    ? `<div class="alert-badge warn">⚠ Key officer sale: ${recentExecSale.insider_name} (${recentExecSale.position}), ${recentExecSale.transaction_date}</div>`
-    : '<div class="alert-badge ok">No recent key-officer sales</div>';
+  // has_recent_executive_sale is the authoritative (unlimited, date-filtered)
+  // signal - the visible txns list below is capped, so a sale within the
+  // scoring window can be true even if it doesn't show up in that list.
+  if (enrichment.has_recent_executive_sale) {
+    const detail = txns.find((t) => t.is_executive_sale);
+    alertEl.innerHTML = detail
+      ? `<div class="alert-badge warn">⚠ Key officer sale: ${detail.insider_name} (${detail.position}), ${detail.transaction_date}</div>`
+      : '<div class="alert-badge warn">⚠ Key officer sale in the last 90 days</div>';
+  } else {
+    alertEl.innerHTML = '<div class="alert-badge ok">No recent key-officer sales</div>';
+  }
 
   if (!txns.length) {
     listEl.innerHTML = '<div class="empty-state">No insider transactions on file</div>';
@@ -226,6 +233,62 @@ function renderMacroAlignmentPanel(sectorFlow) {
   `;
 }
 
+const FLAG_BADGES = {
+  short_squeeze_setup: { label: "🚀 Short Squeeze Setup", cls: "bullish" },
+  seller_exhaustion: { label: "💪 Seller Exhaustion", cls: "bullish" },
+  bearish_conviction: { label: "🐻 Bearish Conviction", cls: "bearish" },
+  high_volatility: { label: "⚡ High Volatility", cls: "warn" },
+  insider_selling: { label: "⚠ Insider Selling", cls: "bearish" },
+};
+
+function renderScoreRationale(scoreDetail) {
+  const badgesEl = document.getElementById("score-badges");
+  const subscoresEl = document.getElementById("score-subscores");
+  const trailEl = document.getElementById("audit-trail");
+
+  if (!scoreDetail || scoreDetail.audit_trail === undefined) {
+    badgesEl.innerHTML = "";
+    subscoresEl.innerHTML = "";
+    trailEl.innerHTML = '<li class="empty-state" style="background:none;border:none;">No score rationale available</li>';
+    return;
+  }
+
+  const flags = scoreDetail.flags || {};
+  const badgeKeys = Object.keys(flags).filter((k) => flags[k]);
+  badgesEl.innerHTML = badgeKeys.length
+    ? badgeKeys
+        .map((k) => {
+          const b = FLAG_BADGES[k] || { label: k, cls: "warn" };
+          return `<span class="score-badge ${b.cls}">${b.label}</span>`;
+        })
+        .join("")
+    : "";
+
+  const subscores = [
+    ["Sentiment", scoreDetail.sentiment_points],
+    ["Technical", scoreDetail.technical_points],
+    ["Positioning & Macro", scoreDetail.positioning_points],
+    ["Risk Modifiers", scoreDetail.risk_modifier_points],
+  ];
+  subscoresEl.innerHTML = subscores
+    .map(([label, value]) => {
+      if (value === null || value === undefined) return "";
+      const cls = value > 0 ? "positive" : value < 0 ? "negative" : "";
+      const sign = value > 0 ? "+" : "";
+      return `
+      <div class="subscore-tile">
+        <div class="subscore-label">${label}</div>
+        <div class="subscore-value ${cls}">${sign}${value}</div>
+      </div>`;
+    })
+    .join("");
+
+  const trail = scoreDetail.audit_trail || [];
+  trailEl.innerHTML = trail.length
+    ? trail.map((line) => `<li class="${line.trim().startsWith("-") ? "negative" : "positive"}">${line}</li>`).join("")
+    : `<li class="empty-state" style="background:none;border:none;">${scoreDetail.reason || "No rules applied"}</li>`;
+}
+
 // Guards against out-of-order responses: if the user (or the initial
 // default-ticker load) triggers a second request before the first one's
 // response lands, the stale response must not overwrite the newer one.
@@ -251,6 +314,7 @@ async function loadTicker(ticker) {
   renderTechnicalPanel(data);
   renderGovernancePanel(data.enrichment);
   renderMacroAlignmentPanel(data.sector_flow);
+  renderScoreRationale(data.score_detail);
 }
 
 searchEl.addEventListener("change", () => {

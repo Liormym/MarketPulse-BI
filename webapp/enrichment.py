@@ -11,12 +11,21 @@ when /stock/<ticker> is requested, and cached in the DB.
 """
 import hashlib
 import math
-from datetime import datetime, timedelta, timezone
+import sys
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import yfinance as yf
 from sqlalchemy import text
 
+SRC_PATH = str(Path(__file__).resolve().parents[1] / "src")
+if SRC_PATH not in sys.path:
+    sys.path.insert(0, SRC_PATH)
+
+from marketpulse.scoring import INSIDER_SELLING_LOOKBACK_DAYS  # noqa: E402
+
 CACHE_TTL = timedelta(hours=24)
+DISPLAY_TRANSACTION_LIMIT = 10
 
 
 def _clean_float(value):
@@ -145,14 +154,34 @@ def get_or_fetch_enrichment(conn, asset_key: int, ticker: str) -> dict:
             FROM "InsiderTransactions"
             WHERE "AssetKey" = :asset_key
             ORDER BY "TransactionDate" DESC
-            LIMIT 10
+            LIMIT :limit
             """
         ),
-        {"asset_key": asset_key},
+        {"asset_key": asset_key, "limit": DISPLAY_TRANSACTION_LIMIT},
     ).mappings().all()
+
+    # Deliberately NOT derived from the (LIMIT'd) `transactions` list above:
+    # a display list capped at DISPLAY_TRANSACTION_LIMIT can easily exclude an
+    # executive sale that's still within the scoring lookback window if a
+    # non-executive insider has traded more frequently since.
+    cutoff = date.today() - timedelta(days=INSIDER_SELLING_LOOKBACK_DAYS)
+    has_recent_executive_sale = (
+        conn.execute(
+            text(
+                """
+                SELECT 1 FROM "InsiderTransactions"
+                WHERE "AssetKey" = :asset_key AND "IsExecutiveSale" = TRUE AND "TransactionDate" >= :cutoff
+                LIMIT 1
+                """
+            ),
+            {"asset_key": asset_key, "cutoff": cutoff},
+        ).first()
+        is not None
+    )
 
     return {
         "short_percent_of_float": short_pct,
+        "has_recent_executive_sale": has_recent_executive_sale,
         "insider_transactions": [
             {
                 "insider_name": t["InsiderName"],

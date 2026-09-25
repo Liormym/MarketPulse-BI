@@ -448,6 +448,81 @@ html, body {
   font-style: italic;
 }
 
+/* Score rationale panel */
+.score-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.score-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+}
+
+.score-badge.bullish { background: rgba(47, 212, 137, 0.15); color: var(--good); }
+.score-badge.bearish { background: rgba(245, 86, 106, 0.15); color: var(--bad); }
+.score-badge.warn { background: rgba(245, 185, 66, 0.15); color: var(--warn); }
+
+.score-subscores {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.subscore-tile {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+}
+
+.subscore-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.subscore-value {
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+.subscore-value.positive { color: var(--good); }
+.subscore-value.negative { color: var(--bad); }
+
+.audit-trail {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.audit-trail li {
+  font-size: 13px;
+  font-family: "SF Mono", "Monaco", "Consolas", monospace;
+  padding: 8px 12px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--border);
+}
+
+.audit-trail li.positive { border-left-color: var(--good); }
+.audit-trail li.negative { border-left-color: var(--bad); }
+
 @media (max-width: 640px) {
   .topbar { padding: 16px; flex-direction: column; align-items: stretch; gap: 12px; }
   .topbar-left { flex-direction: column; align-items: stretch; gap: 10px; }

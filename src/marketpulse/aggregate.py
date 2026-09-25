@@ -1,4 +1,12 @@
-"""Aggregates scored articles into one FactSentiment row per asset per day (spec §5 step 6)."""
+"""Aggregates scored articles into one FactSentiment row per asset per day (spec §5 step 6).
+
+AvgSentimentScore is a confidence-weighted average, per the spec's own data
+dictionary ("ציון סנטימנט ממוצע משוקלל" - weighted average sentiment score).
+Each article's score is already signed confidence (finbert.classify():
++confidence for Positive/Neutral, -confidence for Negative), so the
+confidence weight is just abs(score) - a low-confidence call (near 0)
+contributes almost nothing to the day's average; a confident one dominates.
+"""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -34,7 +42,12 @@ def aggregate_daily_sentiment(articles: list[ScoredArticle]) -> list[DailySentim
         scored = [a for a in group if a.score is not None]
         positive = sum(1 for a in group if a.category == "Positive")
         negative = sum(1 for a in group if a.category == "Negative")
-        avg_score = sum(a.score for a in scored) / len(scored) if scored else 0.0
+
+        total_confidence = sum(abs(a.score) for a in scored)
+        if total_confidence > 0:
+            avg_score = sum(a.score * abs(a.score) for a in scored) / total_confidence
+        else:
+            avg_score = 0.0
         results.append(
             DailySentiment(
                 ticker=ticker,
