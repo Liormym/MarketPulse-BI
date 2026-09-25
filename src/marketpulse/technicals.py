@@ -84,3 +84,60 @@ def compute_technicals(bars: list[DailyBar]) -> list[DayTechnicals]:
             )
         )
     return results
+
+
+def compute_and_upsert_technicals_for_asset(conn, asset_key: int) -> int:
+    """Recomputes and upserts FactStockTechnicals for one asset from its full
+    FactDailyPrice history. Shared by scripts/compute_stock_technicals.py
+    (all tickers, batch) and the live single-ticker refresh endpoint.
+    """
+    from sqlalchemy import text  # local import: keeps this module DB-free for pure-function callers/tests
+
+    rows = conn.execute(
+        text(
+            """
+            SELECT d."DateKey", p."Open", p."High", p."Low", p."Close", p."Volume"
+            FROM "FactDailyPrice" p
+            JOIN "DimDate" d ON d."DateKey" = p."DateKey"
+            WHERE p."AssetKey" = :asset_key
+            ORDER BY d."Date" ASC
+            """
+        ),
+        {"asset_key": asset_key},
+    ).all()
+    if not rows:
+        return 0
+
+    date_keys = [r[0] for r in rows]
+    bars = [DailyBar(open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5]) for r in rows]
+    technicals = compute_technicals(bars)
+
+    for date_key, t in zip(date_keys, technicals):
+        conn.execute(
+            text(
+                """
+                INSERT INTO "FactStockTechnicals"
+                    ("AssetKey", "DateKey", "SMA20", "SMA50", "SMA150", "SMA200",
+                     "ATR14", "AvgVolume20D", "GapPct")
+                VALUES (:asset_key, :date_key, :sma20, :sma50, :sma150, :sma200,
+                        :atr14, :avg_volume, :gap_pct)
+                ON CONFLICT ("AssetKey", "DateKey") DO UPDATE
+                    SET "SMA20" = EXCLUDED."SMA20", "SMA50" = EXCLUDED."SMA50",
+                        "SMA150" = EXCLUDED."SMA150", "SMA200" = EXCLUDED."SMA200",
+                        "ATR14" = EXCLUDED."ATR14", "AvgVolume20D" = EXCLUDED."AvgVolume20D",
+                        "GapPct" = EXCLUDED."GapPct"
+                """
+            ),
+            {
+                "asset_key": asset_key,
+                "date_key": date_key,
+                "sma20": t.sma20,
+                "sma50": t.sma50,
+                "sma150": t.sma150,
+                "sma200": t.sma200,
+                "atr14": t.atr14,
+                "avg_volume": t.avg_volume_20d,
+                "gap_pct": t.gap_pct,
+            },
+        )
+    return len(rows)
