@@ -16,6 +16,7 @@ from .load.db import get_engine
 from .load.upsert import get_asset_key_map, upsert_daily_prices, upsert_daily_sentiment, upsert_news_articles
 from .logging_utils import configure_logging, log_stage, write_dq_results
 from .quality.checks import (
+    check_date_out_of_range,
     check_duplicate_news,
     check_duplicate_price_records,
     check_invalid_empty_headlines,
@@ -37,6 +38,11 @@ def _get_watched_assets(conn) -> list[dict]:
     return [{"ticker": t, "company_name": c} for t, c in rows]
 
 
+def _get_valid_date_keys(conn) -> set[int]:
+    rows = conn.execute(text('SELECT "DateKey" FROM "DimDate"')).all()
+    return {row[0] for row in rows}
+
+
 def run(lookback_days: int = 5) -> uuid.UUID:
     configure_logging()
     run_id = uuid.uuid4()
@@ -50,6 +56,7 @@ def run(lookback_days: int = 5) -> uuid.UUID:
         assets = _get_watched_assets(conn)
         valid_tickers = {a["ticker"] for a in assets}
         tickers = list(valid_tickers)
+        valid_date_keys = _get_valid_date_keys(conn)
 
         # --- Extract ---
         with log_stage(conn, run_id, "Extract") as stage_result:
@@ -70,19 +77,25 @@ def run(lookback_days: int = 5) -> uuid.UUID:
 
             price_records, dq_ticker = check_missing_ticker(price_records, valid_tickers)
             price_records, dq_date = check_missing_date(price_records)
+            price_records, dq_range = check_date_out_of_range(price_records, valid_date_keys)
             price_records, dq_numeric = check_invalid_numeric_values(price_records)
             price_records, dq_dup_price = check_duplicate_price_records(price_records)
 
             news_records, dq_news_ticker = check_missing_ticker(news_records, valid_tickers)
+            news_records, dq_news_range = check_date_out_of_range(
+                news_records, valid_date_keys, date_attr="published_at"
+            )
             news_records, dq_empty = check_invalid_empty_headlines(news_records)
             news_records, dq_dup_news = check_duplicate_news(news_records)
 
             all_dq_results += [
                 dq_ticker,
                 dq_date,
+                dq_range,
                 dq_numeric,
                 dq_dup_price,
                 dq_news_ticker,
+                dq_news_range,
                 dq_empty,
                 dq_dup_news,
             ]
