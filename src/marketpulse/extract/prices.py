@@ -23,6 +23,9 @@ class PriceRecord:
     trade_date: date
     close: float
     volume: int
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
 
 
 class TickerFetchError(Exception):
@@ -65,6 +68,9 @@ def fetch_prices(tickers: list[str], lookback_days: int = 5) -> tuple[list[Price
                     trade_date=idx.date(),
                     close=float(row["Close"]),
                     volume=int(row["Volume"]),
+                    open=float(row["Open"]) if "Open" in row and row["Open"] == row["Open"] else None,
+                    high=float(row["High"]) if "High" in row and row["High"] == row["High"] else None,
+                    low=float(row["Low"]) if "Low" in row and row["Low"] == row["Low"] else None,
                 )
             )
         time.sleep(settings.request_throttle_seconds)

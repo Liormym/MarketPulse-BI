@@ -21,10 +21,11 @@ def upsert_daily_prices(conn: Connection, records, asset_keys: dict[str, int]) -
         conn.execute(
             text(
                 """
-                INSERT INTO "FactDailyPrice" ("AssetKey", "DateKey", "Close", "Volume")
-                VALUES (:asset_key, :date_key, :close, :volume)
+                INSERT INTO "FactDailyPrice" ("AssetKey", "DateKey", "Close", "Volume", "Open", "High", "Low")
+                VALUES (:asset_key, :date_key, :close, :volume, :open, :high, :low)
                 ON CONFLICT ("AssetKey", "DateKey") DO UPDATE
-                    SET "Close" = EXCLUDED."Close", "Volume" = EXCLUDED."Volume"
+                    SET "Close" = EXCLUDED."Close", "Volume" = EXCLUDED."Volume",
+                        "Open" = EXCLUDED."Open", "High" = EXCLUDED."High", "Low" = EXCLUDED."Low"
                 """
             ),
             {
@@ -32,6 +33,9 @@ def upsert_daily_prices(conn: Connection, records, asset_keys: dict[str, int]) -
                 "date_key": int(r.trade_date.strftime("%Y%m%d")),
                 "close": r.close,
                 "volume": r.volume,
+                "open": getattr(r, "open", None),
+                "high": getattr(r, "high", None),
+                "low": getattr(r, "low", None),
             },
         )
         count += 1
