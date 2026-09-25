@@ -38,9 +38,9 @@ class TickerFetchError(Exception):
     retry=retry_if_exception_type(TickerFetchError),
     reraise=True,
 )
-def _fetch_one(ticker: str, lookback_days: int):
+def _fetch_one(ticker: str, period: str):
     try:
-        hist = yf.Ticker(ticker).history(period=f"{lookback_days}d", interval="1d", timeout=10)
+        hist = yf.Ticker(ticker).history(period=period, interval="1d", timeout=10)
     except Exception as exc:  # network/rate-limit errors surface as generic exceptions from yfinance
         raise TickerFetchError(f"{ticker}: {exc}") from exc
     if hist is None or hist.empty:
@@ -48,14 +48,21 @@ def _fetch_one(ticker: str, lookback_days: int):
     return hist
 
 
-def fetch_prices(tickers: list[str], lookback_days: int = 5) -> tuple[list[PriceRecord], list[str]]:
-    """Returns (records, failed_tickers). Never raises for individual ticker failures."""
+def fetch_prices(
+    tickers: list[str], lookback_days: int = 5, period: str | None = None
+) -> tuple[list[PriceRecord], list[str]]:
+    """Returns (records, failed_tickers). Never raises for individual ticker failures.
+
+    `period`, when given, is passed straight to yfinance (e.g. "max" for full
+    available history) and takes precedence over `lookback_days`.
+    """
+    resolved_period = period or f"{lookback_days}d"
     records: list[PriceRecord] = []
     failed: list[str] = []
 
     for ticker in tickers:
         try:
-            hist = _fetch_one(ticker, lookback_days)
+            hist = _fetch_one(ticker, resolved_period)
         except TickerFetchError as exc:
             log.warning("giving up on %s after retries: %s", ticker, exc)
             failed.append(ticker)

@@ -272,6 +272,33 @@ html, body {
   height: 420px;
 }
 
+.chart-wrap-volume {
+  height: 120px;
+  margin-top: 8px;
+}
+
+.timeframe-selector {
+  display: flex;
+  gap: 4px;
+}
+
+.timeframe-btn {
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.timeframe-btn:hover { color: var(--text); border-color: var(--accent); }
+.timeframe-btn.active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.timeframe-btn:focus { outline: none; }
+.timeframe-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 /* Footer */
 .footer {
   padding: 16px 32px;

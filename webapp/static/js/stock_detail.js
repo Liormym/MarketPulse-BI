@@ -6,6 +6,56 @@ const companyTickerEl = document.getElementById("company-ticker");
 const searchEl = document.getElementById("ticker-search");
 
 let chart = null;
+let volumeChart = null;
+let currentData = null; // full, unfiltered dataset from the API
+let currentRange = "1Y";
+
+const RANGE_DAYS = { "1M": 30, "6M": 182, "1Y": 365, "5Y": 365 * 5 };
+const SERIES_KEYS = ["dates", "prices", "opens", "volumes", "sentiment", "sma20", "sma50", "sma150", "sma200", "gap_pct"];
+
+function filterByRange(data, range) {
+  if (range === "MAX" || !data.dates.length) return data;
+
+  const lastDate = new Date(data.dates[data.dates.length - 1]);
+  let cutoff;
+  if (range === "YTD") {
+    cutoff = new Date(lastDate.getFullYear(), 0, 1);
+  } else {
+    cutoff = new Date(lastDate);
+    cutoff.setDate(cutoff.getDate() - RANGE_DAYS[range]);
+  }
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  let from = data.dates.findIndex((d) => d >= cutoffStr);
+  if (from === -1) from = 0;
+
+  const sliced = { ...data };
+  for (const key of SERIES_KEYS) {
+    sliced[key] = data[key].slice(from);
+  }
+  return sliced;
+}
+
+function applyTimeframe(range) {
+  currentRange = range;
+  document.querySelectorAll(".timeframe-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.range === range);
+  });
+  if (!currentData) return;
+  const sliced = filterByRange(currentData, range);
+  renderChart(sliced);
+  renderVolumeChart(sliced);
+}
+
+document.querySelectorAll(".timeframe-btn").forEach((btn) => {
+  btn.addEventListener("click", () => applyTimeframe(btn.dataset.range));
+});
+
+function formatVolume(v) {
+  if (v >= 1e9) return (v / 1e9).toFixed(1) + "B";
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + "M";
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + "K";
+  return String(v);
+}
 
 function scoreBand(score) {
   if (score >= 70) return { band: "good", tag: "Strong Buy Signal" };
@@ -53,29 +103,36 @@ function smaDataset(label, data, color) {
   };
 }
 
+function sentimentMarkerDataset(data) {
+  // Sentiment is sporadic (news doesn't happen every day), so instead of a
+  // bar sub-axis where most days are just empty space, plot it as colored
+  // dot markers sitting directly on the price line for the days it exists -
+  // prominent regardless of how sparse the underlying data is.
+  const points = data.prices.map((p, i) => (data.sentiment[i] != null ? p : null));
+  const colors = data.sentiment.map((s) => (s == null ? "transparent" : s >= 0 ? "#2fd489" : "#f5566a"));
+  const radii = data.sentiment.map((s) => (s == null ? 0 : 6));
+  return {
+    type: "line",
+    label: "Sentiment",
+    data: points,
+    showLine: false,
+    pointRadius: radii,
+    pointHoverRadius: radii.map((r) => (r ? r + 2 : 0)),
+    pointBackgroundColor: colors,
+    pointBorderColor: "#0b0f17",
+    pointBorderWidth: 1.5,
+    yAxisID: "yPrice",
+    order: 0,
+  };
+}
+
 function renderChart(data) {
   const ctx = document.getElementById("price-sentiment-chart").getContext("2d");
-
-  const sentimentColors = data.sentiment.map((s) => {
-    if (s === null || s === undefined) return "rgba(139, 149, 171, 0.15)";
-    return s >= 0 ? "rgba(47, 212, 137, 0.45)" : "rgba(245, 86, 106, 0.45)";
-  });
 
   const config = {
     data: {
       labels: data.dates,
       datasets: [
-        {
-          type: "bar",
-          label: "Sentiment",
-          data: data.sentiment,
-          backgroundColor: sentimentColors,
-          borderWidth: 0,
-          yAxisID: "ySentiment",
-          order: 3,
-          barPercentage: 0.9,
-          categoryPercentage: 1.0,
-        },
         {
           type: "line",
           label: "Price (USD)",
@@ -95,6 +152,7 @@ function renderChart(data) {
         smaDataset("SMA 50", data.sma50, "rgba(143, 107, 255, 0.9)"),
         smaDataset("SMA 150", data.sma150, "rgba(47, 212, 137, 0.7)"),
         smaDataset("SMA 200", data.sma200, "rgba(245, 86, 106, 0.7)"),
+        sentimentMarkerDataset(data),
       ],
     },
     options: {
@@ -115,13 +173,11 @@ function renderChart(data) {
           titleColor: "#e7ebf3",
           bodyColor: "#8b95ab",
           padding: 10,
+          filter: (item) => !(item.dataset.label === "Sentiment" && data.sentiment[item.dataIndex] == null),
           callbacks: {
             label: (item) => {
               if (item.dataset.label === "Sentiment") {
-                const raw = item.raw;
-                return raw === null || raw === undefined
-                  ? "Sentiment: no articles that day"
-                  : `Sentiment: ${item.formattedValue}`;
+                return `Sentiment: ${data.sentiment[item.dataIndex].toFixed(2)}`;
               }
               return `${item.dataset.label}: $${item.formattedValue}`;
             },
@@ -138,13 +194,6 @@ function renderChart(data) {
           grid: { color: "#1c2437" },
           ticks: { color: "#8b95ab", callback: (v) => `$${v}` },
         },
-        ySentiment: {
-          position: "right",
-          min: -1,
-          max: 1,
-          grid: { display: false },
-          ticks: { color: "#8b95ab", stepSize: 0.5 },
-        },
       },
     },
   };
@@ -155,6 +204,70 @@ function renderChart(data) {
     chart.update();
   } else {
     chart = new Chart(ctx, config);
+  }
+}
+
+function renderVolumeChart(data) {
+  const ctx = document.getElementById("volume-chart").getContext("2d");
+
+  const colors = data.volumes.map((_, i) => {
+    const open = data.opens[i];
+    const close = data.prices[i];
+    if (open == null) return "rgba(139, 149, 171, 0.5)";
+    return close >= open ? "rgba(47, 212, 137, 0.6)" : "rgba(245, 86, 106, 0.6)";
+  });
+
+  const config = {
+    type: "bar",
+    data: {
+      labels: data.dates,
+      datasets: [
+        {
+          label: "Volume",
+          data: data.volumes,
+          backgroundColor: colors,
+          borderWidth: 0,
+          barPercentage: 0.9,
+          categoryPercentage: 1.0,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: "#161d2e",
+          borderColor: "#232c40",
+          borderWidth: 1,
+          titleColor: "#e7ebf3",
+          bodyColor: "#8b95ab",
+          padding: 10,
+          callbacks: { label: (item) => `Volume: ${Number(item.raw).toLocaleString()}` },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { color: "#8b95ab", maxRotation: 0, autoSkip: true, maxTicksLimit: 8 },
+        },
+        y: {
+          position: "left",
+          grid: { color: "#1c2437" },
+          ticks: { color: "#8b95ab", callback: (v) => formatVolume(v), maxTicksLimit: 3 },
+        },
+      },
+    },
+  };
+
+  if (volumeChart) {
+    volumeChart.data = config.data;
+    volumeChart.options = config.options;
+    volumeChart.update();
+  } else {
+    volumeChart = new Chart(ctx, config);
   }
 }
 
@@ -310,7 +423,8 @@ async function loadTicker(ticker) {
   companyNameEl.textContent = data.name;
   companyTickerEl.textContent = data.ticker;
   renderScore(data.score, data.score_detail);
-  renderChart(data);
+  currentData = data;
+  applyTimeframe(currentRange);
   renderTechnicalPanel(data);
   renderGovernancePanel(data.enrichment);
   renderMacroAlignmentPanel(data.sector_flow);
