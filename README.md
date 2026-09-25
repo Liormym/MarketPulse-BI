@@ -45,8 +45,11 @@ Star schema: `DimAsset`, `DimDate`, `FactDailyPrice`, `NewsArticles`,
   upserts), `pipeline.py` (orchestrator), `logging_utils.py` (run/DQ logging).
 - `db/migrations/` — versioned SQL DDL, tracked in `schema_migrations`.
 - `db/views/` — Power BI-facing views (not used by the app itself).
-- `config/watchlist.yaml` — the ticker universe; add rows to grow past ~18
-  toward the doc's ~50-ticker target, no code changes needed.
+- `config/watchlist.yaml` — the ticker universe; currently Lior's real
+  portfolio/watchlist tickers (82, incl. a few ETFs, one index, and two crypto
+  pairs), well past the doc's ~50-ticker target. Edit rows here, no code
+  changes needed. A handful of tickers are marked `# VERIFY` — company name
+  couldn't be confidently identified, so `sector` is left `null`.
 - `docker/`, `docker-compose.yml`, `k8s/` — containerization and orchestration
   (see "Beyond local" below).
 - `powerbi/README.md` — how to wire the warehouse into Power BI Desktop.

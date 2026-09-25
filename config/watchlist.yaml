@@ -1,58 +1,256 @@
-# MarketPulse BI watchlist.
-# Start small (~18 tickers spanning major sectors) and grow toward the ~50-ticker
-# target from the initiation doc by appending rows here — no code changes needed.
+# MarketPulse BI watchlist — replaced with Lior's real Yahoo Finance
+# portfolios/watchlists (screenshots shared in session), deduplicated across
+# all lists. Includes ETFs, one benchmark index, and two crypto pairs per his
+# choice — these don't fit the "company + sector" news-sentiment model as
+# cleanly as single stocks, but yfinance prices them fine.
+#
+# A few tickers I could not confidently identify are marked "# VERIFY" below —
+# company_name is left as the raw ticker and sector as null for those; fix them
+# up here once confirmed (no code changes needed either way).
 assets:
+  - ticker: AAOI
+    company_name: Applied Optoelectronics, Inc.
+    sector: Technology
   - ticker: AAPL
     company_name: Apple Inc.
+    sector: Technology
+  - ticker: ACHR
+    company_name: Archer Aviation Inc.
+    sector: Industrials
+  - ticker: AFRM
+    company_name: Affirm Holdings, Inc.
+    sector: Financials
+  - ticker: AIP  # VERIFY — believed to be Arteris, Inc. (semiconductor IP)
+    company_name: Arteris, Inc.
+    sector: Technology
+  - ticker: AMD
+    company_name: Advanced Micro Devices, Inc.
+    sector: Technology
+  - ticker: AMZN
+    company_name: Amazon.com, Inc.
+    sector: Consumer Discretionary
+  - ticker: APLD
+    company_name: Applied Digital Corporation
+    sector: Technology
+  - ticker: ASTS
+    company_name: AST SpaceMobile, Inc.
+    sector: Communication Services
+  - ticker: ATEX
+    company_name: Anterix Inc.
+    sector: Communication Services
+  - ticker: AVGO
+    company_name: Broadcom Inc.
+    sector: Technology
+  - ticker: AXP
+    company_name: American Express Company
+    sector: Financials
+  - ticker: AXTI
+    company_name: AXT, Inc.
+    sector: Technology
+  - ticker: BE
+    company_name: Bloom Energy Corporation
+    sector: Industrials
+  - ticker: BEZQ.TA
+    company_name: Bezeq The Israeli Telecommunication Corp Ltd
+    sector: Communication Services
+  - ticker: BTC-USD
+    company_name: Bitcoin USD
+    sector: Crypto
+  - ticker: CLS
+    company_name: Celestica Inc.
+    sector: Technology
+  - ticker: CLSK
+    company_name: CleanSpark, Inc.
+    sector: Technology
+  - ticker: COHR
+    company_name: Coherent Corp.
+    sector: Technology
+  - ticker: CRDO
+    company_name: Credo Technology Group Holding Ltd
+    sector: Technology
+  - ticker: CVNA
+    company_name: Carvana Co.
+    sector: Consumer Discretionary
+  - ticker: DELL
+    company_name: Dell Technologies Inc.
+    sector: Technology
+  - ticker: ETH-USD
+    company_name: Ethereum USD
+    sector: Crypto
+  - ticker: ETHA
+    company_name: iShares Ethereum Trust ETF
+    sector: ETF
+  - ticker: FCEL
+    company_name: FuelCell Energy, Inc.
+    sector: Industrials
+  - ticker: FTAI
+    company_name: FTAI Aviation Ltd.
+    sector: Industrials
+  - ticker: GLW
+    company_name: Corning Incorporated
+    sector: Technology
+  - ticker: GNRS.TA  # VERIFY — could not confidently identify this TASE ticker
+    company_name: GNRS.TA
+    sector: null
+  - ticker: GOOG
+    company_name: Alphabet Inc. (Class C)
+    sector: Communication Services
+  - ticker: GOOGL
+    company_name: Alphabet Inc. (Class A)
+    sector: Communication Services
+  - ticker: HIVE
+    company_name: HIVE Digital Technologies Ltd.
+    sector: Technology
+  - ticker: HOOD
+    company_name: Robinhood Markets, Inc.
+    sector: Financials
+  - ticker: HPE
+    company_name: Hewlett Packard Enterprise Company
+    sector: Technology
+  - ticker: IBM
+    company_name: International Business Machines Corporation
+    sector: Technology
+  - ticker: IGV
+    company_name: iShares Expanded Tech-Software Sector ETF
+    sector: ETF
+  - ticker: IONQ
+    company_name: IonQ, Inc.
+    sector: Technology
+  - ticker: IREN
+    company_name: IREN Limited
+    sector: Technology
+  - ticker: KEEL  # VERIFY — could not confidently identify this ticker
+    company_name: KEEL
+    sector: null
+  - ticker: KOSPI.KS
+    company_name: KOSPI Composite Index
+    sector: Index
+  - ticker: KTOS
+    company_name: Kratos Defense & Security Solutions, Inc.
+    sector: Industrials
+  - ticker: LITE
+    company_name: Lumentum Holdings Inc.
+    sector: Technology
+  - ticker: META
+    company_name: Meta Platforms, Inc.
+    sector: Communication Services
+  - ticker: MRVL
+    company_name: Marvell Technology, Inc.
     sector: Technology
   - ticker: MSFT
     company_name: Microsoft Corporation
     sector: Technology
+  - ticker: MU
+    company_name: Micron Technology, Inc.
+    sector: Technology
+  - ticker: NBIS
+    company_name: Nebius Group N.V.
+    sector: Technology
+  - ticker: NKE
+    company_name: Nike, Inc.
+    sector: Consumer Discretionary
+  - ticker: NOW
+    company_name: ServiceNow, Inc.
+    sector: Technology
   - ticker: NVDA
     company_name: NVIDIA Corporation
     sector: Technology
-  - ticker: GOOGL
-    company_name: Alphabet Inc.
-    sector: Communication Services
-  - ticker: AMZN
-    company_name: Amazon.com Inc.
-    sector: Consumer Discretionary
-  - ticker: META
-    company_name: Meta Platforms Inc.
-    sector: Communication Services
-  - ticker: TSLA
-    company_name: Tesla Inc.
-    sector: Consumer Discretionary
-  - ticker: JPM
-    company_name: JPMorgan Chase & Co.
-    sector: Financials
-  - ticker: BAC
-    company_name: Bank of America Corporation
-    sector: Financials
-  - ticker: XOM
-    company_name: Exxon Mobil Corporation
-    sector: Energy
-  - ticker: CVX
-    company_name: Chevron Corporation
-    sector: Energy
-  - ticker: JNJ
-    company_name: Johnson & Johnson
+  - ticker: NVO
+    company_name: Novo Nordisk A/S
     sector: Healthcare
-  - ticker: PFE
-    company_name: Pfizer Inc.
-    sector: Healthcare
-  - ticker: PG
-    company_name: Procter & Gamble Co.
-    sector: Consumer Staples
-  - ticker: KO
-    company_name: The Coca-Cola Company
-    sector: Consumer Staples
-  - ticker: CAT
-    company_name: Caterpillar Inc.
-    sector: Industrials
-  - ticker: NEE
-    company_name: NextEra Energy Inc.
+  - ticker: OKE
+    company_name: ONEOK, Inc.
+    sector: Energy
+  - ticker: OKLO
+    company_name: Oklo Inc.
     sector: Utilities
-  - ticker: AMT
-    company_name: American Tower Corporation
-    sector: Real Estate
+  - ticker: ONDS
+    company_name: Ondas Holdings Inc.
+    sector: Technology
+  - ticker: OPEN
+    company_name: Opendoor Technologies Inc.
+    sector: Consumer Discretionary
+  - ticker: ORCL
+    company_name: Oracle Corporation
+    sector: Technology
+  - ticker: ORL.TA  # VERIFY — could not confidently identify this TASE ticker
+    company_name: ORL.TA
+    sector: null
+  - ticker: PLTR
+    company_name: Palantir Technologies Inc.
+    sector: Technology
+  - ticker: QCOM
+    company_name: QUALCOMM Incorporated
+    sector: Technology
+  - ticker: RBRK
+    company_name: Rubrik, Inc.
+    sector: Technology
+  - ticker: RCAT
+    company_name: Red Cat Holdings, Inc.
+    sector: Industrials
+  - ticker: RDW
+    company_name: Redwire Corporation
+    sector: Industrials
+  - ticker: RKLB
+    company_name: Rocket Lab USA, Inc.
+    sector: Industrials
+  - ticker: SATL
+    company_name: Satellogic Inc.
+    sector: Technology
+  - ticker: SCHW
+    company_name: The Charles Schwab Corporation
+    sector: Financials
+  - ticker: SEDG
+    company_name: SolarEdge Technologies, Inc.
+    sector: Technology
+  - ticker: SNDK
+    company_name: Sandisk Corporation
+    sector: Technology
+  - ticker: SOFI
+    company_name: SoFi Technologies, Inc.
+    sector: Financials
+  - ticker: SOUN
+    company_name: SoundHound AI, Inc.
+    sector: Technology
+  - ticker: SPCX  # VERIFY — could not confidently identify this ticker (possibly a pre-IPO/private-markets tracker symbol)
+    company_name: SPCX
+    sector: null
+  - ticker: SPMO
+    company_name: Invesco S&P 500 Momentum ETF
+    sector: ETF
+  - ticker: TA35.TA
+    company_name: Tel Aviv 35 Index
+    sector: Index
+  - ticker: TAN
+    company_name: Invesco Solar ETF
+    sector: ETF
+  - ticker: TENB
+    company_name: Tenable Holdings, Inc.
+    sector: Technology
+  - ticker: TSLA
+    company_name: Tesla, Inc.
+    sector: Consumer Discretionary
+  - ticker: UBER
+    company_name: Uber Technologies, Inc.
+    sector: Technology
+  - ticker: V
+    company_name: Visa Inc.
+    sector: Financials
+  - ticker: VRDS.TA  # VERIFY — could not confidently identify this TASE ticker
+    company_name: VRDS.TA
+    sector: null
+  - ticker: VRT
+    company_name: Vertiv Holdings Co
+    sector: Technology
+  - ticker: VST
+    company_name: Vistra Corp.
+    sector: Utilities
+  - ticker: XLE
+    company_name: Energy Select Sector SPDR Fund
+    sector: ETF
+  - ticker: XLK
+    company_name: Technology Select Sector SPDR Fund
+    sector: ETF
+  - ticker: ZM
+    company_name: Zoom Communications, Inc.
+    sector: Technology

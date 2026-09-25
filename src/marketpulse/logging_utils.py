@@ -47,6 +47,11 @@ def log_stage(conn: Connection, run_id: uuid.UUID, stage: str):
         status = "Failed"
         result["error"] = str(exc)
         log.exception("stage failed")
+        # A failed statement leaves the connection's transaction aborted —
+        # every subsequent statement on it (including the status UPDATE below)
+        # would raise InFailedSqlTransaction and mask the real error unless
+        # we roll back first.
+        conn.rollback()
         raise
     finally:
         conn.execute(

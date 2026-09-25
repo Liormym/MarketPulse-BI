@@ -4,6 +4,7 @@ from marketpulse.aggregate import ScoredArticle
 from marketpulse.extract.news import NewsRecord
 from marketpulse.extract.prices import PriceRecord
 from marketpulse.quality.checks import (
+    check_date_out_of_range,
     check_duplicate_news,
     check_duplicate_price_records,
     check_invalid_empty_headlines,
@@ -85,4 +86,28 @@ def test_check_missing_sentiment_result_flags_but_does_not_drop():
     result = check_missing_sentiment_result(scored)
 
     assert result.passed is False
+    assert result.failed_records == 1
+
+
+def test_check_date_out_of_range_drops_dates_outside_dimdate():
+    valid_keys = {20260305, 20260306}
+    records = [price(d=date(2026, 3, 5)), price(d=date(2021, 3, 31))]
+
+    good, result = check_date_out_of_range(records, valid_keys)
+
+    assert [r.trade_date for r in good] == [date(2026, 3, 5)]
+    assert result.passed is False
+    assert result.failed_records == 1
+
+
+def test_check_date_out_of_range_supports_datetime_attr_for_news():
+    valid_keys = {20260305}
+    stale = news(article_id="old", title="Stale republished article")
+    stale.published_at = datetime(2021, 3, 31, tzinfo=timezone.utc)
+    fresh = news(article_id="fresh", title="Fresh article")
+    fresh.published_at = datetime(2026, 3, 5, tzinfo=timezone.utc)
+
+    good, result = check_date_out_of_range([stale, fresh], valid_keys, date_attr="published_at")
+
+    assert [r.article_id for r in good] == ["fresh"]
     assert result.failed_records == 1

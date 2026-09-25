@@ -41,6 +41,28 @@ def check_missing_date(records: list, date_attr: str = "trade_date"):
     return good, result
 
 
+def check_date_out_of_range(records: list, valid_date_keys: set[int], date_attr: str = "trade_date"):
+    """Drops records whose date isn't in the pre-seeded DimDate calendar.
+
+    News feeds occasionally resurface old/republished articles with a stale
+    `published` date (seen: an RSS entry dated 2021 showing up in a routine
+    fetch); loading it would violate FactSentiment's DateKey FK. Rejected here
+    rather than at the DB, matching the spec §8 pattern for bad dates.
+    """
+    good, bad = [], []
+    for r in records:
+        d = getattr(r, date_attr)
+        key = int(d.strftime("%Y%m%d")) if d is not None else None
+        (good if key in valid_date_keys else bad).append(r)
+    result = CheckResult(
+        check_type="DateOutOfRange",
+        passed=len(bad) == 0,
+        failed_records=len(bad),
+        details=f"{len(bad)} records dated outside the seeded DimDate calendar dropped" if bad else "",
+    )
+    return good, result
+
+
 def check_invalid_numeric_values(price_records: list):
     good, bad = [], []
     for r in price_records:
