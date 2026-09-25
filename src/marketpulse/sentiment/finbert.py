@@ -1,9 +1,16 @@
 """FinBERT sentiment scoring for financial headlines (spec §9).
 
 Loads ProsusAI/finbert once per process. Input: a headline. Output: one of
-Positive/Negative/Neutral plus a confidence score. Text is truncated to the
+Positive/Negative/Neutral plus a signed score. Text is truncated to the
 model's max length; any inference failure is caught so a single bad headline
 never aborts the pipeline (spec §10 FinBERT Processing Failure handling).
+
+The model's raw output is a confidence in [0, 1] for whichever label won -
+always positive, even for a confidently Negative headline. The data
+dictionary (spec §6, FactSentiment.AvgSentimentScore) defines the stored
+score as ranging -1 (very negative) to +1 (very positive), so the Negative
+case is negated here, at the source, before it ever reaches storage or
+aggregation.
 """
 from __future__ import annotations
 
@@ -21,7 +28,7 @@ MAX_TOKENS = 512
 @dataclass
 class SentimentResult:
     category: str  # Positive / Negative / Neutral
-    score: float  # confidence of the winning category, 0..1
+    score: float  # signed: +confidence for Positive/Neutral, -confidence for Negative
 
 
 @lru_cache(maxsize=1)
@@ -47,7 +54,9 @@ def classify(headline: str) -> SentimentResult | None:
         category = {"positive": "Positive", "negative": "Negative", "neutral": "Neutral"}.get(
             label, "Neutral"
         )
-        return SentimentResult(category=category, score=float(out["score"]))
+        confidence = float(out["score"])
+        score = -confidence if category == "Negative" else confidence
+        return SentimentResult(category=category, score=score)
     except Exception as exc:
         log.warning("FinBERT classification failed for headline %r: %s", headline[:80], exc)
         return None
