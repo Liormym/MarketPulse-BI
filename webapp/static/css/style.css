@@ -299,6 +299,66 @@ html, body {
 .timeframe-btn:focus { outline: none; }
 .timeframe-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+.chart-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.refresh-btn {
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.refresh-btn:hover:not(:disabled) { border-color: var(--accent); }
+.refresh-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.refresh-message {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0;
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.2s ease, padding 0.2s ease, margin 0.2s ease;
+  border-radius: var(--radius-md);
+}
+
+.refresh-message.visible {
+  max-height: 60px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+
+.refresh-message.ok { background: rgba(47, 212, 137, 0.12); color: var(--good); }
+.refresh-message.warn { background: rgba(245, 185, 66, 0.12); color: var(--warn); }
+.refresh-message.error { background: rgba(245, 86, 106, 0.12); color: var(--bad); }
+
+.pattern-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.pattern-hint-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(245, 185, 66, 0.1);
+  color: var(--warn);
+  border: 1px dashed rgba(245, 185, 66, 0.4);
+  cursor: help;
+}
+
 /* Footer */
 .footer {
   padding: 16px 32px;

@@ -402,6 +402,23 @@ function renderScoreRationale(scoreDetail) {
     : `<li class="empty-state" style="background:none;border:none;">${scoreDetail.reason || "No rules applied"}</li>`;
 }
 
+function renderPatternHints(hints) {
+  const el = document.getElementById("pattern-hints");
+  if (!hints || !hints.length) {
+    el.innerHTML = "";
+    return;
+  }
+  el.innerHTML = hints
+    .map(
+      (h) => `
+      <div class="pattern-hint-badge" title="${h.description.replace(/"/g, "&quot;")}">
+        🔍 Technical Observation: ${h.name} — a hint only, not part of the score. Open a real
+        charting tool (e.g. TradingView) for a deeper look.
+      </div>`
+    )
+    .join("");
+}
+
 // Guards against out-of-order responses: if the user (or the initial
 // default-ticker load) triggers a second request before the first one's
 // response lands, the stale response must not overwrite the newer one.
@@ -429,6 +446,7 @@ async function loadTicker(ticker) {
   renderGovernancePanel(data.enrichment);
   renderMacroAlignmentPanel(data.sector_flow);
   renderScoreRationale(data.score_detail);
+  renderPatternHints(data.pattern_hints);
 }
 
 searchEl.addEventListener("change", () => {
@@ -441,6 +459,49 @@ searchEl.addEventListener("keydown", (e) => {
     const ticker = searchEl.value.trim().toUpperCase();
     if (ticker) loadTicker(ticker);
     searchEl.blur();
+  }
+});
+
+const refreshBtn = document.getElementById("refresh-btn");
+const refreshBtnLabel = document.getElementById("refresh-btn-label");
+const refreshMessageEl = document.getElementById("refresh-message");
+
+function showRefreshMessage(text, kind) {
+  refreshMessageEl.textContent = text;
+  refreshMessageEl.className = `refresh-message visible ${kind}`;
+  setTimeout(() => {
+    refreshMessageEl.classList.remove("visible");
+  }, 6000);
+}
+
+refreshBtn.addEventListener("click", async () => {
+  const ticker = latestRequestedTicker;
+  if (!ticker) return;
+
+  refreshBtn.disabled = true;
+  refreshBtnLabel.textContent = "🔄 Refreshing…";
+
+  try {
+    const res = await fetch(`/api/stock/${encodeURIComponent(ticker)}/refresh`, { method: "POST" });
+    const result = await res.json();
+
+    if (res.status === 429) {
+      showRefreshMessage(`⏳ ${result.message}`, "warn");
+    } else if (!result.ok) {
+      showRefreshMessage(`⚠ Refresh failed: ${result.error || "unknown error"}`, "error");
+    } else {
+      showRefreshMessage(
+        `✓ Refreshed: ${result.price_rows} price row(s), ${result.articles_fetched} article(s) checked. ` +
+          `${result.remaining_refreshes} refresh(es) left this hour.`,
+        "ok"
+      );
+      await loadTicker(ticker);
+    }
+  } catch (err) {
+    showRefreshMessage("⚠ Refresh failed: network error", "error");
+  } finally {
+    refreshBtn.disabled = false;
+    refreshBtnLabel.textContent = "🔄 Refresh Data";
   }
 });
 
