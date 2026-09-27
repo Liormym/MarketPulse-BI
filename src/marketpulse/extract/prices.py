@@ -3,6 +3,16 @@
 Handles rate limiting per spec §10: on 429/timeout, retries up to 3 times with
 exponential backoff; if a ticker still fails, it's logged and skipped so the
 rest of the pipeline continues (never a fatal error for a single ticker).
+
+Rows with Volume == 0 are dropped rather than stored. yfinance returns a
+phantom row (stale carried-forward Close, zero volume) for exchange-specific
+non-trading days it doesn't otherwise account for - e.g. the Tel Aviv Stock
+Exchange's Friday/Saturday weekend, which DimDate's Mon-Fri IsTradingDay
+logic doesn't know about. Left in, these rows quietly dilute rolling
+volume/ATR averages for the affected tickers (confirmed on BEZQ.TA/GNRS.TA/
+ORL.TA/VRDS.TA). A day with genuinely zero shares traded is indistinguishable
+from this and is discarded the same way - true zero-volume trading days are
+not meaningful for the rolling averages this data feeds either.
 """
 import logging
 import time
@@ -69,6 +79,8 @@ def fetch_prices(
             continue
 
         for idx, row in hist.iterrows():
+            if int(row["Volume"]) == 0:
+                continue  # phantom non-trading-day row (or a true zero-volume day) - see module docstring
             records.append(
                 PriceRecord(
                     ticker=ticker,

@@ -51,3 +51,33 @@ def test_fetch_prices_captures_ohlcv(monkeypatch):
     assert r.high == 11.0
     assert r.low == 9.0
     assert r.volume == 1000
+
+
+class _FakeTickerWithZeroVolumeRows:
+    """Simulates yfinance returning phantom non-trading-day rows (e.g. a
+    TASE Friday) alongside real trading days."""
+
+    def history(self, period, interval, timeout):
+        idx = pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"])
+        return pd.DataFrame(
+            {
+                "Open": [10.0, 10.5, 10.5],
+                "High": [11.0, 10.5, 11.5],
+                "Low": [9.0, 10.5, 10.0],
+                "Close": [10.5, 10.5, 11.0],
+                "Volume": [1000, 0, 800],  # middle day is a phantom zero-volume row
+            },
+            index=idx,
+        )
+
+
+def test_fetch_prices_drops_zero_volume_rows(monkeypatch):
+    monkeypatch.setattr(prices_module.yf, "Ticker", lambda t: _FakeTickerWithZeroVolumeRows())
+    monkeypatch.setattr(prices_module.time, "sleep", lambda *_: None)
+
+    records, failed = fetch_prices(["BEZQ.TA"], period="max")
+
+    assert failed == []
+    assert len(records) == 2  # the zero-volume middle row is dropped
+    assert all(r.volume > 0 for r in records)
+    assert [r.trade_date.isoformat() for r in records] == ["2026-01-01", "2026-01-03"]
