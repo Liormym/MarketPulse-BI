@@ -67,8 +67,14 @@ MAX_POSITIONING_POINTS = POINTS_SECTOR_ACCUMULATION + POINTS_SHORT_SQUEEZE_BONUS
 MAX_NO_SENTIMENT_BASE = MAX_TECHNICAL_POINTS + MAX_POSITIONING_POINTS
 
 # --- Risk Modifiers (-30 to 0 pts) ---
-ATR_VOLATILITY_PENALTY_THRESHOLD_PCT = 4.5
-POINTS_HIGH_VOLATILITY_PENALTY = -10.0
+# Relative, not absolute: a flat ATR% threshold unfairly penalizes stocks
+# that are naturally volatile by nature (e.g. small-cap growth names) even
+# when they're trading calmly *for them*. Instead we compare today's ATR-14
+# against the stock's OWN trailing 90-day ATR distribution (see
+# technicals.py's ATR_ZSCORE_WINDOW) and only penalize when it's a genuine
+# outlier relative to its own history.
+ATR_ZSCORE_PENALTY_THRESHOLD = 1.5  # standard deviations above the stock's own 90-day ATR average
+POINTS_HIGH_VOLATILITY_PENALTY = -10.0  # flat penalty when triggered - never scales past this cap
 POINTS_INSIDER_SELLING_PENALTY = -20.0
 INSIDER_SELLING_LOOKBACK_DAYS = 90  # how far back a CEO/CFO sale still counts as "recent"
 
@@ -206,16 +212,23 @@ def _short_interest_points(
 
 
 def _risk_modifier_points(
-    atr_pct: float | None, has_recent_executive_sale: bool, audit: list[str], flags: dict
+    atr14: float | None,
+    atr_90d_avg: float | None,
+    atr_90d_std: float | None,
+    has_recent_executive_sale: bool,
+    audit: list[str],
+    flags: dict,
 ) -> float:
     points = 0.0
-    if atr_pct is not None and atr_pct > ATR_VOLATILITY_PENALTY_THRESHOLD_PCT:
-        points += POINTS_HIGH_VOLATILITY_PENALTY
-        flags["high_volatility"] = True
-        audit.append(
-            f"{POINTS_HIGH_VOLATILITY_PENALTY:.0f} pts: High volatility - "
-            f"ATR {atr_pct:.2f}% of price exceeds the {ATR_VOLATILITY_PENALTY_THRESHOLD_PCT:.1f}% threshold"
-        )
+    if atr14 is not None and atr_90d_avg is not None and atr_90d_std is not None and atr_90d_std > 0:
+        z_score = (atr14 - atr_90d_avg) / atr_90d_std
+        if z_score > ATR_ZSCORE_PENALTY_THRESHOLD:
+            points += POINTS_HIGH_VOLATILITY_PENALTY
+            flags["high_volatility"] = True
+            audit.append(
+                f"{POINTS_HIGH_VOLATILITY_PENALTY:.0f} pts: High volatility - "
+                f"ATR is {z_score:.1f} SD above historical average"
+            )
     if has_recent_executive_sale:
         points += POINTS_INSIDER_SELLING_PENALTY
         flags["insider_selling"] = True
@@ -278,6 +291,8 @@ def compute_investment_score(
     sma200_series: list[float | None],
     recent_sentiment: list[float | None],
     atr14: float | None,
+    atr_90d_avg: float | None = None,
+    atr_90d_std: float | None = None,
     avg_volume_20d: float | None,
     sector_flow_status: str | None,
     short_percent_of_float: float | None,
@@ -312,7 +327,6 @@ def compute_investment_score(
     recent_volumes = volumes[-window:]
 
     weighted_sentiment = _weighted_recent_sentiment(recent_sentiment)
-    atr_pct = (atr14 / price * 100) if (atr14 is not None and price) else None
 
     sentiment_points = _sentiment_points(weighted_sentiment, audit)
     technical_points = _technical_points(
@@ -321,7 +335,9 @@ def compute_investment_score(
     sector_points = _sector_flow_points(sector_flow_status, audit)
     short_interest_points = _short_interest_points(short_percent_of_float, technical_points, audit, flags)
     positioning_points = sector_points + short_interest_points
-    risk_modifier_points = _risk_modifier_points(atr_pct, has_recent_executive_sale, audit, flags)
+    risk_modifier_points = _risk_modifier_points(
+        atr14, atr_90d_avg, atr_90d_std, has_recent_executive_sale, audit, flags
+    )
 
     latest_volume = volumes[-1] if volumes else None
     _check_sell_the_news(sentiment_points, price, sma20, avg_volume_20d, latest_volume, audit, flags)

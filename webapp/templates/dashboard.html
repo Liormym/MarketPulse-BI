@@ -26,6 +26,18 @@
     <div class="ticker-tape" id="ticker-tape"></div>
 
     <main class="content">
+      <div id="macro-risk-banner" class="macro-risk-banner hidden">
+        <span class="macro-risk-icon">⚠</span>
+        <span><strong>High Market Pressure:</strong> US Treasuries or Crude Oil are elevated, historically carrying higher systemic risk for equities.</span>
+      </div>
+
+      <section class="panel strong-buys-panel">
+        <div class="panel-header"><h2>🚀 Top 5 Strong Buys</h2></div>
+        <div class="strong-buys-grid" id="strong-buys-grid">
+          <div class="empty-state">Loading…</div>
+        </div>
+      </section>
+
       <section>
         <div class="panel-header"><h2>Macro &amp; Market Regime</h2></div>
         <div class="macro-bar" id="macro-bar">
@@ -33,6 +45,8 @@
           <div class="macro-tile"><div class="macro-tile-label">2Y Treasury Yield</div><div class="macro-tile-value" id="macro-2y">—</div></div>
           <div class="macro-tile"><div class="macro-tile-label">10Y-2Y Spread</div><div class="macro-tile-value" id="macro-spread">—</div></div>
           <div class="macro-tile"><div class="macro-tile-label">Crude Oil (WTI)</div><div class="macro-tile-value" id="macro-oil">—</div></div>
+          <div class="macro-tile"><div class="macro-tile-label">Bitcoin (BTC-USD)</div><div class="macro-tile-value" id="macro-btc">—</div></div>
+          <div class="macro-tile"><div class="macro-tile-label">KOSPI Index</div><div class="macro-tile-value" id="macro-kospi">—</div></div>
           <div class="macro-tile"><div class="macro-tile-label">Market Breadth (S5FI)</div><div class="macro-tile-value placeholder" id="macro-breadth">Not yet tracked</div></div>
           <div class="macro-tile"><div class="macro-tile-label">AAII Sentiment</div><div class="macro-tile-value placeholder" id="macro-aaii">Not yet tracked</div></div>
         </div>

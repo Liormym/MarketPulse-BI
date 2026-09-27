@@ -23,6 +23,7 @@ from marketpulse.live_refresh import refresh_ticker  # noqa: E402
 from marketpulse.load.db import get_engine  # noqa: E402
 from marketpulse.pattern_detection import detect_patterns  # noqa: E402
 from marketpulse.scoring import SENTIMENT_LOOKBACK_DAYS, compute_investment_score  # noqa: E402
+from marketpulse.technicals import describe_gap  # noqa: E402
 from rate_limit import check_and_record_refresh  # noqa: E402
 
 app = Flask(__name__)
@@ -73,6 +74,11 @@ def api_movers():
     return jsonify(db.get_top_movers())
 
 
+@app.route("/api/top-scores")
+def api_top_scores():
+    return jsonify(db.get_top_strong_buys())
+
+
 @app.route("/stock/<ticker>")
 def stock_detail(ticker):
     tickers = db.get_tickers()
@@ -110,6 +116,8 @@ def api_stock(ticker: str):
         sma200_series=data["sma200"],
         recent_sentiment=data["sentiment"][-SENTIMENT_LOOKBACK_DAYS:],
         atr14=data["atr14"],
+        atr_90d_avg=data["atr_90d_avg"],
+        atr_90d_std=data["atr_90d_std"],
         avg_volume_20d=data["avg_volume_20d"],
         sector_flow_status=sector_flow["flow_status"] if sector_flow else None,
         short_percent_of_float=enrichment["short_percent_of_float"] if enrichment else None,
@@ -130,6 +138,22 @@ def api_stock(ticker: str):
     data["pattern_hints"] = [
         {"name": h.name, "description": h.description} for h in detect_patterns(data["prices"])
     ]
+
+    # Structured gap info for the latest bar (direction + exact price bounds,
+    # not just a bare percentage) - see technicals.describe_gap().
+    gap = None
+    if len(data["opens"]) >= 1 and len(data["prices"]) >= 2 and data["opens"][-1] is not None:
+        gap = describe_gap(data["opens"][-1], data["prices"][-2])
+    data["latest_gap"] = (
+        {
+            "direction": gap.direction,
+            "prev_close": round(gap.prev_close, 2),
+            "open": round(gap.open, 2),
+            "gap_pct": round(gap.gap_pct, 2),
+        }
+        if gap is not None
+        else None
+    )
 
     return jsonify(data)
 

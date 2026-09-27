@@ -137,15 +137,26 @@ html, body {
 /* Ticker tape - thin scrolling strip of the same movers data shown below,
    surfaced up top for the "always-on market pulse" terminal feel. */
 .ticker-tape {
-  display: flex;
-  gap: 0;
-  overflow-x: auto;
+  overflow: hidden;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
-  scrollbar-width: none;
 }
 
-.ticker-tape::-webkit-scrollbar { display: none; }
+.ticker-tape-track {
+  display: flex;
+  gap: 0;
+  width: max-content;
+  animation: ticker-scroll 45s linear infinite;
+}
+
+.ticker-tape:hover .ticker-tape-track {
+  animation-play-state: paused;
+}
+
+@keyframes ticker-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); } /* track is rendered twice, so -50% is one full loop */
+}
 
 .ticker-tape-item {
   display: flex;
@@ -164,6 +175,78 @@ html, body {
 .ticker-tape-item .tt-price { color: var(--text-muted); }
 .ticker-tape-item .tt-change.positive { color: var(--pos); }
 .ticker-tape-item .tt-change.negative { color: var(--neg); }
+
+/* Macro Risk Alert banner (dashboard) */
+.macro-risk-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-radius: var(--radius-md);
+  background: var(--warn-soft);
+  border: 1px solid rgba(255, 176, 32, 0.4);
+  color: var(--warn);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.macro-risk-banner.hidden { display: none; }
+.macro-risk-icon { font-size: 16px; }
+
+/* Top 5 Strong Buys widget (dashboard) */
+.strong-buys-panel {
+  background: linear-gradient(160deg, var(--surface-2), var(--surface));
+  border-color: rgba(22, 242, 163, 0.25);
+}
+
+.strong-buys-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+}
+
+.strong-buy-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid rgba(22, 242, 163, 0.3);
+  text-decoration: none;
+  color: var(--text);
+  transition: transform 0.1s ease, box-shadow 0.15s ease;
+}
+
+.strong-buy-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 0 24px -8px rgba(22, 242, 163, 0.5);
+}
+
+.strong-buy-rank {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--pos);
+  letter-spacing: 0.5px;
+}
+
+.strong-buy-ticker { font-size: 16px; font-weight: 700; }
+.strong-buy-name {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strong-buy-score {
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--pos);
+  margin-top: 4px;
+}
 
 /* Content */
 .content {
@@ -347,6 +430,17 @@ html, body {
 .timeframe-btn.active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
 .timeframe-btn:focus { outline: none; }
 .timeframe-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.period-return-badge {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+}
+
+.period-return-badge.positive { background: var(--pos-soft); color: var(--pos); }
+.period-return-badge.negative { background: var(--neg-soft); color: var(--neg); }
 
 .chart-header-actions {
   display: flex;
@@ -571,6 +665,8 @@ html, body {
 .metric-row:last-child { border-bottom: none; }
 .metric-label { color: var(--text-muted); }
 .metric-value { font-family: var(--font-mono); font-weight: 700; font-variant-numeric: tabular-nums; }
+.metric-value.positive { color: var(--pos); }
+.metric-value.negative { color: var(--neg); }
 
 .alert-badge {
   display: inline-flex;
