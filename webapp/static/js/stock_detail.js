@@ -109,7 +109,7 @@ function sentimentMarkerDataset(data) {
   // dot markers sitting directly on the price line for the days it exists -
   // prominent regardless of how sparse the underlying data is.
   const points = data.prices.map((p, i) => (data.sentiment[i] != null ? p : null));
-  const colors = data.sentiment.map((s) => (s == null ? "transparent" : s >= 0 ? "#2fd489" : "#f5566a"));
+  const colors = data.sentiment.map((s) => (s == null ? "transparent" : s >= 0 ? "#16f2a3" : "#ff4d6a"));
   const radii = data.sentiment.map((s) => (s == null ? 0 : 6));
   return {
     type: "line",
@@ -119,7 +119,7 @@ function sentimentMarkerDataset(data) {
     pointRadius: radii,
     pointHoverRadius: radii.map((r) => (r ? r + 2 : 0)),
     pointBackgroundColor: colors,
-    pointBorderColor: "#0b0f17",
+    pointBorderColor: "#090b10",
     pointBorderWidth: 1.5,
     yAxisID: "yPrice",
     order: 0,
@@ -137,21 +137,21 @@ function renderChart(data) {
           type: "line",
           label: "Price (USD)",
           data: data.prices,
-          borderColor: "#5b8cff",
-          backgroundColor: "rgba(91, 140, 255, 0.08)",
+          borderColor: "#2f8cff",
+          backgroundColor: "rgba(47, 140, 255, 0.08)",
           borderWidth: 2.5,
           pointRadius: 0,
           pointHoverRadius: 5,
-          pointHoverBackgroundColor: "#5b8cff",
+          pointHoverBackgroundColor: "#2f8cff",
           tension: 0.3,
           fill: true,
           yAxisID: "yPrice",
           order: 1,
         },
-        smaDataset("SMA 20", data.sma20, "rgba(245, 185, 66, 0.9)"),
-        smaDataset("SMA 50", data.sma50, "rgba(143, 107, 255, 0.9)"),
-        smaDataset("SMA 150", data.sma150, "rgba(47, 212, 137, 0.7)"),
-        smaDataset("SMA 200", data.sma200, "rgba(245, 86, 106, 0.7)"),
+        smaDataset("SMA 20", data.sma20, "rgba(255, 176, 32, 0.9)"),
+        smaDataset("SMA 50", data.sma50, "rgba(123, 92, 255, 0.9)"),
+        smaDataset("SMA 150", data.sma150, "rgba(22, 242, 163, 0.7)"),
+        smaDataset("SMA 200", data.sma200, "rgba(255, 77, 106, 0.7)"),
         sentimentMarkerDataset(data),
       ],
     },
@@ -164,14 +164,16 @@ function renderChart(data) {
           display: true,
           position: "top",
           align: "end",
-          labels: { color: "#8b95ab", boxWidth: 10, font: { size: 11 } },
+          labels: { color: "#8892a3", boxWidth: 10, font: { size: 11, family: "'JetBrains Mono', monospace" } },
         },
         tooltip: {
-          backgroundColor: "#161d2e",
-          borderColor: "#232c40",
+          backgroundColor: "#151b27",
+          borderColor: "#1e2735",
           borderWidth: 1,
-          titleColor: "#e7ebf3",
-          bodyColor: "#8b95ab",
+          titleColor: "#e8edf5",
+          bodyColor: "#8892a3",
+          bodyFont: { family: "'JetBrains Mono', monospace" },
+          titleFont: { family: "'JetBrains Mono', monospace" },
           padding: 10,
           filter: (item) => !(item.dataset.label === "Sentiment" && data.sentiment[item.dataIndex] == null),
           callbacks: {
@@ -187,12 +189,12 @@ function renderChart(data) {
       scales: {
         x: {
           grid: { display: false },
-          ticks: { color: "#8b95ab", maxRotation: 0, autoSkip: true, maxTicksLimit: 8 },
+          ticks: { color: "#8892a3", font: { family: "'JetBrains Mono', monospace", size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 },
         },
         yPrice: {
           position: "left",
-          grid: { color: "#1c2437" },
-          ticks: { color: "#8b95ab", callback: (v) => `$${v}` },
+          grid: { color: "#171e2a" },
+          ticks: { color: "#8892a3", font: { family: "'JetBrains Mono', monospace", size: 10 }, callback: (v) => `$${v}` },
         },
       },
     },
@@ -213,8 +215,8 @@ function renderVolumeChart(data) {
   const colors = data.volumes.map((_, i) => {
     const open = data.opens[i];
     const close = data.prices[i];
-    if (open == null) return "rgba(139, 149, 171, 0.5)";
-    return close >= open ? "rgba(47, 212, 137, 0.6)" : "rgba(245, 86, 106, 0.6)";
+    if (open == null) return "rgba(136, 146, 163, 0.5)";
+    return close >= open ? "rgba(22, 242, 163, 0.6)" : "rgba(255, 77, 106, 0.6)";
   });
 
   const config = {
@@ -239,11 +241,13 @@ function renderVolumeChart(data) {
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: "#161d2e",
-          borderColor: "#232c40",
+          backgroundColor: "#151b27",
+          borderColor: "#1e2735",
           borderWidth: 1,
-          titleColor: "#e7ebf3",
-          bodyColor: "#8b95ab",
+          titleColor: "#e8edf5",
+          bodyColor: "#8892a3",
+          bodyFont: { family: "'JetBrains Mono', monospace" },
+          titleFont: { family: "'JetBrains Mono', monospace" },
           padding: 10,
           callbacks: { label: (item) => `Volume: ${Number(item.raw).toLocaleString()}` },
         },
@@ -251,12 +255,12 @@ function renderVolumeChart(data) {
       scales: {
         x: {
           grid: { display: false },
-          ticks: { color: "#8b95ab", maxRotation: 0, autoSkip: true, maxTicksLimit: 8 },
+          ticks: { color: "#8892a3", font: { family: "'JetBrains Mono', monospace", size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 },
         },
         y: {
           position: "left",
-          grid: { color: "#1c2437" },
-          ticks: { color: "#8b95ab", callback: (v) => formatVolume(v), maxTicksLimit: 3 },
+          grid: { color: "#171e2a" },
+          ticks: { color: "#8892a3", font: { family: "'JetBrains Mono', monospace", size: 10 }, callback: (v) => formatVolume(v), maxTicksLimit: 3 },
         },
       },
     },

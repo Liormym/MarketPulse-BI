@@ -16,7 +16,7 @@ async function loadMacro() {
     const spread = data.ten_year_yield - data.two_year_yield;
     const spreadEl = document.getElementById("macro-spread");
     spreadEl.textContent = fmtPct(spread);
-    spreadEl.style.color = spread < 0 ? "var(--bad)" : "var(--text)"; // inverted curve is a classic recession signal
+    spreadEl.style.color = spread < 0 ? "var(--neg)" : "var(--text)"; // inverted curve is a classic recession signal
   }
   document.getElementById("macro-oil").textContent = fmtUsd(data.crude_oil_price);
 
@@ -69,10 +69,35 @@ async function loadMovers() {
       const cls = m.change_pct >= 0 ? "positive" : "negative";
       const sign = m.change_pct >= 0 ? "+" : "";
       return `
-      <div class="mover-card" onclick="window.location.href='/stock/${m.ticker}'">
+      <div class="mover-card ${cls}" onclick="window.location.href='/stock/${m.ticker}'">
         <div class="mover-ticker">${m.ticker}</div>
         <div class="mover-price">$${m.price.toFixed(2)}</div>
         <div class="mover-change change-pct ${cls}">${sign}${m.change_pct.toFixed(2)}%</div>
+      </div>`;
+    })
+    .join("");
+
+  renderTickerTape(movers);
+}
+
+function renderTickerTape(movers) {
+  const tape = document.getElementById("ticker-tape");
+  if (!tape) return; // not present on every screen
+
+  if (!movers.length) {
+    tape.innerHTML = "";
+    return;
+  }
+
+  tape.innerHTML = movers
+    .map((m) => {
+      const cls = m.change_pct >= 0 ? "positive" : "negative";
+      const sign = m.change_pct >= 0 ? "+" : "";
+      return `
+      <div class="ticker-tape-item" onclick="window.location.href='/stock/${m.ticker}'">
+        <span class="tt-ticker">${m.ticker}</span>
+        <span class="tt-price">$${m.price.toFixed(2)}</span>
+        <span class="tt-change ${cls}">${sign}${m.change_pct.toFixed(2)}%</span>
       </div>`;
     })
     .join("");
