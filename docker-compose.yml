@@ -41,5 +41,23 @@ services:
     # the command to `apply_migrations.py` / `seed_dimensions.py` for setup.
     command: ["python", "-m", "marketpulse.pipeline"]
 
+  webapp:
+    build:
+      context: .
+      dockerfile: docker/webapp.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-marketpulse}
+      DB_USER: ${DB_USER:-marketpulse}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+      FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:-dev-only-change-me}
+    ports:
+      - "5050:5050"
+
 volumes:
   marketpulse_pgdata:

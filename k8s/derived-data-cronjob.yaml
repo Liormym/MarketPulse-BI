@@ -1,0 +1,48 @@
+# Recomputes technicals, sector money-flow, and macro indicators once the
+# day's prices/sentiment have landed - scheduled 30 min after
+# marketpulse-pipeline so it never races the data it depends on.
+#
+# Note: these scripts currently recompute over each ticker's FULL history on
+# every run (see src/marketpulse/technicals.py), not incrementally - fine at
+# today's scale (a few minutes for 560 tickers) but the first thing to
+# optimize (windowed/incremental recompute) if the watchlist grows much
+# further before this job's runtime becomes a problem.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: marketpulse-derived-data
+  namespace: marketpulse
+spec:
+  schedule: "0 22 * * 1-5" # 22:00 UTC weekdays, 30 min after the pipeline CronJob
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800 # 30 min
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: derived-data
+              image: marketpulse-pipeline:latest # same image as the ETL pipeline - same deps, different entrypoint
+              command:
+                - /bin/sh
+                - -c
+                - >
+                  python scripts/compute_stock_technicals.py &&
+                  python scripts/compute_sector_flows.py &&
+                  python scripts/fetch_macro_indicators.py
+              envFrom:
+                - secretRef:
+                    name: marketpulse-db-credentials
+                - configMapRef:
+                    name: marketpulse-config
+              resources:
+                requests:
+                  cpu: "250m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "1"
+                  memory: "1Gi"

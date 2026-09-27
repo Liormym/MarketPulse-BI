@@ -31,6 +31,28 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24)
 
 
+@app.route("/health")
+def health():
+    """Liveness probe: is the process itself alive? Deliberately does not
+    touch the DB - a slow/unreachable Postgres shouldn't make Kubernetes
+    conclude the Flask process is dead and restart-loop it. See /health/ready
+    for the dependency-aware check."""
+    return jsonify({"status": "ok"})
+
+
+@app.route("/health/ready")
+def readiness():
+    """Readiness probe: can this pod actually serve traffic right now? Runs
+    a trivial query so Kubernetes stops routing to a pod whose DB connection
+    is down, without restarting it (that's what /health is for)."""
+    try:
+        with get_engine().connect() as conn:
+            conn.execute(db.text("SELECT 1"))
+        return jsonify({"status": "ready"})
+    except Exception as exc:
+        return jsonify({"status": "not_ready", "error": str(exc)}), 503
+
+
 @app.route("/")
 def dashboard():
     return render_template("dashboard.html")

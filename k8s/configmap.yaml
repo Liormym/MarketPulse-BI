@@ -1,0 +1,15 @@
+# Non-secret runtime config, shared by the pipeline CronJob, the derived-data
+# CronJob, and the webapp Deployment. Credentials stay in
+# marketpulse-db-credentials (see secrets.example.yaml) - never mixed in here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: marketpulse-config
+  namespace: marketpulse
+data:
+  WATCHLIST_PATH: config/watchlist.yaml
+  NEWS_PER_TICKER_LIMIT: "15"
+  REQUEST_THROTTLE_SECONDS: "1.0"
+  FINBERT_MODEL_NAME: ProsusAI/finbert
+  DB_HOST: postgres.marketpulse.svc.cluster.local
+  DB_PORT: "5432"
