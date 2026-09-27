@@ -12,6 +12,20 @@ Point budget (sums to exactly 100 when everything is maximally bullish):
     Risk Modifiers       -30 to  0   (ATR volatility penalty, insider-selling penalty)
 Final score = sum of the above, clamped to [0, 100].
 
+DYNAMIC NORMALIZATION: a QA backtest found that stocks with no recent news
+(the overwhelming majority of the watchlist, given how thin the RSS/FinBERT
+pipeline's coverage is) can never exceed Technical(40)+Positioning(30)=70,
+so "Strong Buy" (>70) was structurally unreachable for most of the universe
+and, when it did fire, was almost entirely a sentiment artifact rather than
+a technical/fundamental one. Rather than just lowering the UI's band
+thresholds (which papers over the real issue - a missing 30-point bucket),
+when there is NO scored sentiment in the lookback window at all, the
+Technical+Positioning base is normalized from its 70-point ceiling up to a
+100-point scale: normalized = (technical + positioning) / MAX_NO_SENTIMENT_BASE * 100.
+Risk modifiers are applied AFTER normalization, not inside it, so a -20
+insider-selling penalty always means -20 regardless of whether sentiment
+data exists. See compute_investment_score() and MAX_NO_SENTIMENT_BASE.
+
 Needs 200 trading days of price (SMA-200) to compute at all - see
 scripts/backfill_historical_prices.py. Returns score=None with a reason
 otherwise, rather than a number quietly computed on too little data.
@@ -33,6 +47,9 @@ POINTS_PRICE_ABOVE_SMA200 = 15.0
 POINTS_SMA20_ABOVE_SMA50 = 10.0
 POINTS_SELLER_EXHAUSTION = 5.0
 SELLER_EXHAUSTION_LOOKBACK_DAYS = 5  # trading days checked for the down-day/volume pattern
+MAX_TECHNICAL_POINTS = (
+    POINTS_PRICE_ABOVE_SMA50 + POINTS_PRICE_ABOVE_SMA200 + POINTS_SMA20_ABOVE_SMA50 + POINTS_SELLER_EXHAUSTION
+)
 
 # --- Positioning & Macro (-10 to 30 pts) ---
 POINTS_SECTOR_ACCUMULATION = 20.0
@@ -43,12 +60,22 @@ POINTS_SHORT_SQUEEZE_BONUS = 10.0
 POINTS_BEARISH_CONVICTION_PENALTY = -10.0
 # "HIGH" technical score for the short-interest rule: >= half of the 40-pt max
 TECHNICAL_HIGH_THRESHOLD = 20.0
+MAX_POSITIONING_POINTS = POINTS_SECTOR_ACCUMULATION + POINTS_SHORT_SQUEEZE_BONUS
+
+# When there's no sentiment data at all, Technical+Positioning is normalized
+# from this ceiling up to 100 - see the module docstring.
+MAX_NO_SENTIMENT_BASE = MAX_TECHNICAL_POINTS + MAX_POSITIONING_POINTS
 
 # --- Risk Modifiers (-30 to 0 pts) ---
 ATR_VOLATILITY_PENALTY_THRESHOLD_PCT = 4.5
 POINTS_HIGH_VOLATILITY_PENALTY = -10.0
 POINTS_INSIDER_SELLING_PENALTY = -20.0
 INSIDER_SELLING_LOOKBACK_DAYS = 90  # how far back a CEO/CFO sale still counts as "recent"
+
+# --- "Sell the News" risk flag (informational only - does NOT affect the score) ---
+SELL_THE_NEWS_SENTIMENT_THRESHOLD = 25.0  # sentiment_points out of MAX_SENTIMENT_POINTS
+SELL_THE_NEWS_PRICE_EXTENSION_PCT = 10.0  # price this much %+ above SMA-20 counts as "overextended"
+SELL_THE_NEWS_VOLUME_CLIMAX_MULTIPLIER = 2.0  # today's volume vs. the 20-day average counts as "climaxing"
 
 
 @dataclass
@@ -199,6 +226,49 @@ def _risk_modifier_points(
     return points
 
 
+def _check_sell_the_news(
+    sentiment_points: float,
+    price: float,
+    sma20: float | None,
+    avg_volume_20d: float | None,
+    latest_volume: int | None,
+    audit: list[str],
+    flags: dict,
+) -> None:
+    """'Buy the rumor, sell the news': a very high sentiment score combined
+    with already-overextended technicals (price far above its 20-day SMA, or
+    a volume climax) can mean the news-driven move is already exhausted.
+    Purely informational - a warning badge, never a point adjustment. Doesn't
+    run at all unless sentiment is genuinely strong, so it can't fire on the
+    normalized no-sentiment path (sentiment_points is 0 there)."""
+    if sentiment_points <= SELL_THE_NEWS_SENTIMENT_THRESHOLD:
+        return
+
+    price_extended = (
+        sma20 is not None and sma20 > 0 and price > sma20 * (1 + SELL_THE_NEWS_PRICE_EXTENSION_PCT / 100)
+    )
+    volume_climaxing = (
+        avg_volume_20d is not None
+        and avg_volume_20d > 0
+        and latest_volume is not None
+        and latest_volume > avg_volume_20d * SELL_THE_NEWS_VOLUME_CLIMAX_MULTIPLIER
+    )
+    if not (price_extended or volume_climaxing):
+        return
+
+    reasons = []
+    if price_extended:
+        reasons.append(f"price {(price / sma20 - 1) * 100:.1f}% above its 20-day SMA")
+    if volume_climaxing:
+        reasons.append("volume climaxing vs. its 20-day average")
+
+    flags["sell_the_news_risk"] = True
+    audit.append(
+        f"⚠ Sell the News Risk: sentiment is very high ({sentiment_points:.1f}/{MAX_SENTIMENT_POINTS:.0f}) "
+        f"but {' and '.join(reasons)} - the news-driven move may already be exhausted"
+    )
+
+
 def compute_investment_score(
     *,
     closes: list[float],
@@ -253,7 +323,26 @@ def compute_investment_score(
     positioning_points = sector_points + short_interest_points
     risk_modifier_points = _risk_modifier_points(atr_pct, has_recent_executive_sale, audit, flags)
 
-    raw_total = sentiment_points + technical_points + positioning_points + risk_modifier_points
+    latest_volume = volumes[-1] if volumes else None
+    _check_sell_the_news(sentiment_points, price, sma20, avg_volume_20d, latest_volume, audit, flags)
+
+    if weighted_sentiment is None:
+        # No news at all: normalize the Technical+Positioning base up from its
+        # 70-point ceiling to 100, then apply risk modifiers on top - see the
+        # module docstring for why.
+        base = technical_points + positioning_points
+        normalized_base = base / MAX_NO_SENTIMENT_BASE * 100
+        scale = 100 / MAX_NO_SENTIMENT_BASE
+        technical_points = technical_points * scale
+        positioning_points = positioning_points * scale
+        audit.append(
+            f"Score normalized: no recent news, so the {base:.1f}/{MAX_NO_SENTIMENT_BASE:.0f}-point "
+            f"Technical + Positioning base is scaled to a /100 base ({normalized_base:.1f}) before risk modifiers"
+        )
+        raw_total = normalized_base + risk_modifier_points
+    else:
+        raw_total = sentiment_points + technical_points + positioning_points + risk_modifier_points
+
     final_score = round(_clamp(raw_total, 0, 100))
 
     return ScoreBreakdown(

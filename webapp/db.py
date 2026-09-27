@@ -191,16 +191,29 @@ def get_sector_flows() -> list[dict]:
 
 def get_top_movers(limit: int = 25) -> list[dict]:
     """Largest daily % movers (by absolute value) across the whole watchlist,
-    using each ticker's latest two trading days."""
+    using each ticker's latest two trading days.
+
+    Filters FactDailyPrice down to a recent date window BEFORE computing the
+    LAG() window function - the table now holds 4.5M+ rows going back to the
+    1980s (period=max backfill), and windowing the full history on every
+    dashboard load was taking ~1.8s vs. ~10-70ms for the other dashboard
+    endpoints. 10 calendar days comfortably covers weekends/holidays while
+    still being a tiny slice of the table.
+    """
     query = text(
         """
-        WITH ranked AS (
-            SELECT
-                p."AssetKey", d."Date", p."Close",
-                LAG(p."Close") OVER (PARTITION BY p."AssetKey" ORDER BY d."Date") AS prev_close,
-                ROW_NUMBER() OVER (PARTITION BY p."AssetKey" ORDER BY d."Date" DESC) AS rn
+        WITH recent AS (
+            SELECT p."AssetKey", d."Date", p."Close"
             FROM "FactDailyPrice" p
             JOIN "DimDate" d ON d."DateKey" = p."DateKey"
+            WHERE d."Date" >= CURRENT_DATE - INTERVAL '10 days'
+        ),
+        ranked AS (
+            SELECT
+                "AssetKey", "Date", "Close",
+                LAG("Close") OVER (PARTITION BY "AssetKey" ORDER BY "Date") AS prev_close,
+                ROW_NUMBER() OVER (PARTITION BY "AssetKey" ORDER BY "Date" DESC) AS rn
+            FROM recent
         )
         SELECT a."Ticker", a."CompanyName", r."Close", r."prev_close"
         FROM ranked r

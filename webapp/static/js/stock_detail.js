@@ -352,6 +352,7 @@ const FLAG_BADGES = {
   bearish_conviction: { label: "🐻 Bearish Conviction", cls: "bearish" },
   high_volatility: { label: "⚡ High Volatility", cls: "warn" },
   insider_selling: { label: "⚠ Insider Selling", cls: "bearish" },
+  sell_the_news_risk: { label: "📉 Sell the News Risk", cls: "warn" },
 };
 
 function renderScoreRationale(scoreDetail) {
