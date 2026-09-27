@@ -23,11 +23,8 @@ spec:
               envFrom:
                 - secretRef:
                     name: marketpulse-db-credentials
-              env:
-                - name: DB_HOST
-                  value: postgres.marketpulse.svc.cluster.local
-                - name: DB_PORT
-                  value: "5432"
+                - configMapRef:
+                    name: marketpulse-config
               resources:
                 requests:
                   cpu: "250m"
