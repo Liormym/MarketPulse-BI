@@ -1,5 +1,5 @@
 from marketpulse.scoring import (
-    ATR_VOLATILITY_PENALTY_THRESHOLD_PCT,
+    ATR_ZSCORE_PENALTY_THRESHOLD,
     MAX_NO_SENTIMENT_BASE,
     MIN_PRICES_FOR_SCORE,
     POINTS_BEARISH_CONVICTION_PENALTY,
@@ -26,6 +26,8 @@ def _base_kwargs(n=MIN_PRICES_FOR_SCORE + 10, price=100.0):
         sma200_series=list(smas),
         recent_sentiment=[],
         atr14=None,
+        atr_90d_avg=None,
+        atr_90d_std=None,
         avg_volume_20d=None,
         sector_flow_status=None,
         short_percent_of_float=None,
@@ -91,6 +93,8 @@ def test_normalized_subscores_still_sum_to_the_final_score():
     kwargs["closes"][-1] = 130.0
     kwargs["short_percent_of_float"] = 0.15  # short squeeze bonus, since technicals are strong
     kwargs["atr14"] = 10.0  # volatility penalty, applied post-normalization
+    kwargs["atr_90d_avg"] = 2.0
+    kwargs["atr_90d_std"] = 1.0
     result = compute_investment_score(**kwargs)
     total = result.sentiment_points + result.technical_points + result.positioning_points + result.risk_modifier_points
     assert round(total) == result.score
@@ -155,20 +159,53 @@ def test_low_short_interest_triggers_neither_rule():
     assert "bearish_conviction" not in result.flags
 
 
-def test_high_atr_percent_applies_volatility_penalty():
+def test_high_atr_zscore_applies_volatility_penalty():
     kwargs = _base_kwargs(price=100.0)
-    kwargs["atr14"] = 5.0  # 5% of price, above the 4.5% threshold
+    # 90-day ATR average 2.0, stdev 1.0 -> current ATR of 3.7 is 1.7 SD above.
+    kwargs["atr14"] = 3.7
+    kwargs["atr_90d_avg"] = 2.0
+    kwargs["atr_90d_std"] = 1.0
     result = compute_investment_score(**kwargs)
     assert result.flags.get("high_volatility") is True
     assert result.risk_modifier_points == POINTS_HIGH_VOLATILITY_PENALTY
-    assert any(f"{ATR_VOLATILITY_PENALTY_THRESHOLD_PCT}" in line for line in result.audit_trail)
+    assert any("1.7 SD above historical average" in line for line in result.audit_trail)
 
 
-def test_low_atr_percent_no_penalty():
+def test_atr_zscore_at_or_below_threshold_no_penalty():
     kwargs = _base_kwargs(price=100.0)
-    kwargs["atr14"] = 2.0  # 2% of price, below threshold
+    # Current ATR exactly 1.5 SD above average - at the threshold, not past it.
+    kwargs["atr14"] = 3.5
+    kwargs["atr_90d_avg"] = 2.0
+    kwargs["atr_90d_std"] = 1.0
     result = compute_investment_score(**kwargs)
     assert "high_volatility" not in result.flags
+
+
+def test_atr_below_its_own_historical_average_no_penalty():
+    kwargs = _base_kwargs(price=100.0)
+    kwargs["atr14"] = 5.0  # high in absolute/percent terms...
+    kwargs["atr_90d_avg"] = 5.0  # ...but right at its own historical average
+    kwargs["atr_90d_std"] = 1.0
+    result = compute_investment_score(**kwargs)
+    assert "high_volatility" not in result.flags
+
+
+def test_atr_penalty_requires_full_90_day_history():
+    kwargs = _base_kwargs(price=100.0)
+    kwargs["atr14"] = 10.0  # would be a huge z-score if avg/std were known
+    kwargs["atr_90d_avg"] = None
+    kwargs["atr_90d_std"] = None
+    result = compute_investment_score(**kwargs)
+    assert "high_volatility" not in result.flags
+
+
+def test_atr_penalty_is_capped_at_exactly_10_points():
+    kwargs = _base_kwargs(price=100.0)
+    kwargs["atr14"] = 50.0  # an extreme outlier - many, many SD above average
+    kwargs["atr_90d_avg"] = 2.0
+    kwargs["atr_90d_std"] = 1.0
+    result = compute_investment_score(**kwargs)
+    assert result.risk_modifier_points == POINTS_HIGH_VOLATILITY_PENALTY == -10.0
 
 
 def test_insider_selling_penalty_applied():
@@ -182,6 +219,8 @@ def test_insider_selling_penalty_applied():
 def test_score_is_clamped_to_0_when_penalties_exceed_gains():
     kwargs = _base_kwargs()
     kwargs["atr14"] = 10.0  # big volatility penalty
+    kwargs["atr_90d_avg"] = 2.0
+    kwargs["atr_90d_std"] = 1.0
     kwargs["has_recent_executive_sale"] = True  # insider penalty
     kwargs["short_percent_of_float"] = 0.20  # bearish conviction penalty (weak technicals)
     result = compute_investment_score(**kwargs)

@@ -12,9 +12,21 @@ let currentRange = "1Y";
 
 const RANGE_DAYS = { "1M": 30, "6M": 182, "1Y": 365, "5Y": 365 * 5 };
 const SERIES_KEYS = ["dates", "prices", "opens", "volumes", "sentiment", "sma20", "sma50", "sma150", "sma200", "gap_pct"];
+const SHORT_TERM_POINT_COUNT = { "5D": 5 };
 
 function filterByRange(data, range) {
   if (range === "MAX" || !data.dates.length) return data;
+
+  if (range in SHORT_TERM_POINT_COUNT) {
+    // Daily data, so "5D" means the last 5 daily points, not a 5-calendar-day
+    // cutoff (which could land on 3-4 trading days if a weekend intervenes).
+    const n = SHORT_TERM_POINT_COUNT[range];
+    const sliced = { ...data };
+    for (const key of SERIES_KEYS) {
+      sliced[key] = data[key].slice(-n);
+    }
+    return sliced;
+  }
 
   const lastDate = new Date(data.dates[data.dates.length - 1]);
   let cutoff;
@@ -35,6 +47,30 @@ function filterByRange(data, range) {
   return sliced;
 }
 
+function computePeriodReturnPct(data) {
+  const prices = (data.prices || []).filter((p) => p != null);
+  if (prices.length < 2) return null;
+  const startPrice = prices[0];
+  const endPrice = prices[prices.length - 1];
+  if (!startPrice) return null;
+  return ((endPrice - startPrice) / startPrice) * 100;
+}
+
+function renderPeriodReturn(data) {
+  const el = document.getElementById("period-return-badge");
+  if (!el) return;
+  const returnPct = computePeriodReturnPct(data);
+  if (returnPct == null) {
+    el.textContent = "";
+    el.className = "period-return-badge";
+    return;
+  }
+  const cls = returnPct >= 0 ? "positive" : "negative";
+  const sign = returnPct >= 0 ? "+" : "";
+  el.textContent = `Period Return: ${sign}${returnPct.toFixed(1)}%`;
+  el.className = `period-return-badge ${cls}`;
+}
+
 function applyTimeframe(range) {
   currentRange = range;
   document.querySelectorAll(".timeframe-btn").forEach((btn) => {
@@ -44,6 +80,7 @@ function applyTimeframe(range) {
   const sliced = filterByRange(currentData, range);
   renderChart(sliced);
   renderVolumeChart(sliced);
+  renderPeriodReturn(sliced);
 }
 
 document.querySelectorAll(".timeframe-btn").forEach((btn) => {
@@ -283,8 +320,19 @@ function renderTechnicalPanel(data) {
   document.getElementById("metric-atr").textContent = fmt(data.atr14);
   document.getElementById("metric-avgvol").textContent =
     data.avg_volume_20d != null ? Math.round(data.avg_volume_20d).toLocaleString() : "—";
-  const latestGap = lastNonNull(data.gap_pct);
-  document.getElementById("metric-gap").textContent = latestGap != null ? `${latestGap.toFixed(2)}%` : "—";
+
+  const gapEl = document.getElementById("metric-gap");
+  const gap = data.latest_gap;
+  if (gap) {
+    const lo = Math.min(gap.prev_close, gap.open).toFixed(2);
+    const hi = Math.max(gap.prev_close, gap.open).toFixed(2);
+    const sign = gap.gap_pct >= 0 ? "+" : "";
+    gapEl.textContent = `Gap ${gap.direction}: $${lo} - $${hi} (${sign}${gap.gap_pct.toFixed(2)}%)`;
+    gapEl.className = `metric-value ${gap.direction === "Up" ? "positive" : "negative"}`;
+  } else {
+    gapEl.textContent = "—";
+    gapEl.className = "metric-value";
+  }
 }
 
 function fmt(value) {

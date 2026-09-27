@@ -15,6 +15,12 @@ from sqlalchemy import text  # noqa: E402
 from marketpulse.load.db import get_engine  # noqa: E402
 from marketpulse.sector_flow import SECTOR_SPDR_TICKERS, SECTOR_TO_SPDR  # noqa: E402
 
+# Historically, elevated yields/oil have put sustained pressure on equity
+# valuations (higher discount rates, higher input/transport costs) - crossing
+# either threshold surfaces the dashboard's "Macro Risk Alert" banner.
+MACRO_RISK_10Y_YIELD_THRESHOLD = 4.25  # percent
+MACRO_RISK_OIL_THRESHOLD = 85.0  # USD/barrel, WTI
+
 
 def get_asset_key(ticker: str) -> int | None:
     with get_engine().connect() as conn:
@@ -79,7 +85,7 @@ def get_price_sentiment_history(ticker: str) -> dict | None:
     )
     latest_technicals_query = text(
         """
-        SELECT "ATR14", "AvgVolume20D"
+        SELECT "ATR14", "ATR90Avg", "ATR90Std", "AvgVolume20D"
         FROM "FactStockTechnicals"
         WHERE "AssetKey" = :asset_key
         ORDER BY "DateKey" DESC
@@ -118,6 +124,8 @@ def get_price_sentiment_history(ticker: str) -> dict | None:
         "sma200": [_round(r["sma200"], 2) for r in rows],
         "gap_pct": [_round(r["gap_pct"], 2) for r in rows],
         "atr14": _round(latest_technicals["ATR14"], 2) if latest_technicals else None,
+        "atr_90d_avg": _round(latest_technicals["ATR90Avg"], 2) if latest_technicals else None,
+        "atr_90d_std": _round(latest_technicals["ATR90Std"], 2) if latest_technicals else None,
         "avg_volume_20d": _round(latest_technicals["AvgVolume20D"], 0) if latest_technicals else None,
     }
 
@@ -143,7 +151,11 @@ def get_macro_snapshot() -> dict | None:
             (SELECT m."MarketBreadth" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
                 WHERE m."MarketBreadth" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS market_breadth,
             (SELECT m."AAIISentiment" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
-                WHERE m."AAIISentiment" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS aaii_sentiment
+                WHERE m."AAIISentiment" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS aaii_sentiment,
+            (SELECT m."BitcoinPrice" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."BitcoinPrice" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS bitcoin_price,
+            (SELECT m."KospiIndex" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."KospiIndex" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS kospi_index
         """
     )
     with get_engine().connect() as conn:
@@ -151,6 +163,9 @@ def get_macro_snapshot() -> dict | None:
     if row is None or (row["ten_year_as_of"] is None and row["oil_as_of"] is None):
         return None
     as_of = max(d for d in (row["ten_year_as_of"], row["oil_as_of"]) if d is not None)
+    macro_risk_alert = (
+        row["ten_year_yield"] is not None and row["ten_year_yield"] > MACRO_RISK_10Y_YIELD_THRESHOLD
+    ) or (row["crude_oil_price"] is not None and row["crude_oil_price"] > MACRO_RISK_OIL_THRESHOLD)
     return {
         "as_of": as_of.isoformat(),
         "ten_year_yield": row["ten_year_yield"],
@@ -158,6 +173,9 @@ def get_macro_snapshot() -> dict | None:
         "crude_oil_price": row["crude_oil_price"],
         "market_breadth": row["market_breadth"],
         "aaii_sentiment": row["aaii_sentiment"],
+        "bitcoin_price": row["bitcoin_price"],
+        "kospi_index": row["kospi_index"],
+        "macro_risk_alert": macro_risk_alert,
     }
 
 
@@ -237,6 +255,35 @@ def get_top_movers(limit: int = 25) -> list[dict]:
         )
     movers.sort(key=lambda m: abs(m["change_pct"]), reverse=True)
     return movers[:limit]
+
+
+def get_top_strong_buys(limit: int = 5) -> list[dict]:
+    """Top-N tickers by cached Investment Score. Refreshed by
+    scripts/compute_investment_scores.py - recomputing the full score for
+    every watchlist ticker live on each dashboard load (price+technicals+
+    sentiment+sector-flow joins, per ticker) would be far too slow, the same
+    reasoning get_top_movers's date-windowing already documents, just more
+    so since a score is a heavier computation than a single price delta."""
+    query = text(
+        """
+        SELECT a."Ticker", a."CompanyName", fis."Score", fis."ComputedAt"
+        FROM "FactInvestmentScore" fis
+        JOIN "DimAsset" a ON a."AssetKey" = fis."AssetKey"
+        ORDER BY fis."Score" DESC
+        LIMIT :limit
+        """
+    )
+    with get_engine().connect() as conn:
+        rows = conn.execute(query, {"limit": limit}).mappings().all()
+    return [
+        {
+            "ticker": r["Ticker"],
+            "name": r["CompanyName"],
+            "score": round(r["Score"]),
+            "as_of": r["ComputedAt"].isoformat(),
+        }
+        for r in rows
+    ]
 
 
 def enrich_stock(ticker: str) -> dict | None:
