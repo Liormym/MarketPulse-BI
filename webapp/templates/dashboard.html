@@ -41,14 +41,15 @@
       <section>
         <div class="panel-header"><h2>Macro &amp; Market Regime</h2></div>
         <div class="macro-bar" id="macro-bar">
-          <div class="macro-tile"><div class="macro-tile-label">10Y Treasury Yield</div><div class="macro-tile-value" id="macro-10y">—</div></div>
-          <div class="macro-tile"><div class="macro-tile-label">2Y Treasury Yield</div><div class="macro-tile-value" id="macro-2y">—</div></div>
+          <div class="macro-tile"><div class="macro-tile-label">10Y Treasury Yield</div><div class="macro-tile-value" id="macro-10y">—</div><div class="macro-tile-change" id="macro-10y-change"></div></div>
+          <div class="macro-tile"><div class="macro-tile-label">2Y Treasury Yield</div><div class="macro-tile-value" id="macro-2y">—</div><div class="macro-tile-change" id="macro-2y-change"></div></div>
           <div class="macro-tile"><div class="macro-tile-label">10Y-2Y Spread</div><div class="macro-tile-value" id="macro-spread">—</div></div>
-          <div class="macro-tile"><div class="macro-tile-label">Crude Oil (WTI)</div><div class="macro-tile-value" id="macro-oil">—</div></div>
-          <div class="macro-tile"><div class="macro-tile-label">Bitcoin (BTC-USD)</div><div class="macro-tile-value" id="macro-btc">—</div></div>
-          <div class="macro-tile"><div class="macro-tile-label">KOSPI Index</div><div class="macro-tile-value" id="macro-kospi">—</div></div>
-          <div class="macro-tile"><div class="macro-tile-label">Market Breadth (S5FI)</div><div class="macro-tile-value placeholder" id="macro-breadth">Not yet tracked</div></div>
-          <div class="macro-tile"><div class="macro-tile-label">AAII Sentiment</div><div class="macro-tile-value placeholder" id="macro-aaii">Not yet tracked</div></div>
+          <div class="macro-tile"><div class="macro-tile-label">Crude Oil (WTI)</div><div class="macro-tile-value" id="macro-oil">—</div><div class="macro-tile-change" id="macro-oil-change"></div></div>
+          <div class="macro-tile"><div class="macro-tile-label">Bitcoin (BTC-USD)</div><div class="macro-tile-value" id="macro-btc">—</div><div class="macro-tile-change" id="macro-btc-change"></div></div>
+          <div class="macro-tile"><div class="macro-tile-label">KOSPI Index</div><div class="macro-tile-value" id="macro-kospi">—</div><div class="macro-tile-change" id="macro-kospi-change"></div></div>
+          <div class="macro-tile"><div class="macro-tile-label">S&amp;P 500</div><div class="macro-tile-value" id="macro-sp500">—</div><div class="macro-tile-change" id="macro-sp500-change"></div></div>
+          <div class="macro-tile"><div class="macro-tile-label">NASDAQ Composite</div><div class="macro-tile-value" id="macro-nasdaq">—</div><div class="macro-tile-change" id="macro-nasdaq-change"></div></div>
+          <div class="macro-tile"><div class="macro-tile-label">S&amp;P 500 Equal Weight (RSP)</div><div class="macro-tile-value" id="macro-rsp">—</div><div class="macro-tile-change" id="macro-rsp-change"></div></div>
         </div>
       </section>
 
@@ -57,12 +58,13 @@
           <h2>Sector Money-Flow</h2>
           <span class="empty-state" id="sector-asof"></span>
         </div>
+        <div id="sector-leader-banner" class="sector-leader-banner hidden"></div>
         <table class="data-table">
           <thead>
-            <tr><th>Sector ETF</th><th>Name</th><th>Volume Ratio</th><th>Status</th></tr>
+            <tr><th>Sector ETF</th><th>Name</th><th>Daily %</th><th>Volume Ratio</th><th>Status</th></tr>
           </thead>
           <tbody id="sector-table-body">
-            <tr><td colspan="4" class="empty-state">Loading…</td></tr>
+            <tr><td colspan="5" class="empty-state">Loading…</td></tr>
           </tbody>
         </table>
       </section>

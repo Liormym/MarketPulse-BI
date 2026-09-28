@@ -108,14 +108,22 @@ def get_price_sentiment_history(ticker: str) -> dict | None:
         ).mappings().first()
 
     sector_spdr = SECTOR_TO_SPDR.get(asset["Sector"])
+    prices = [_round(r["close"], 2) for r in rows]
+
+    latest_price = prices[-1] if prices else None
+    daily_change_pct = None
+    if len(prices) >= 2 and prices[-2]:
+        daily_change_pct = round((prices[-1] - prices[-2]) / prices[-2] * 100, 2)
 
     return {
         "ticker": asset["Ticker"],
         "name": asset["CompanyName"],
         "sector": asset["Sector"],
         "sector_spdr": sector_spdr,
+        "latest_price": latest_price,
+        "daily_change_pct": daily_change_pct,
         "dates": [r["date"].isoformat() for r in rows],
-        "prices": [_round(r["close"], 2) for r in rows],
+        "prices": prices,
         "opens": [_round(r["open"], 2) for r in rows],
         "volumes": [r["volume"] for r in rows],
         "sentiment": [_round(r["sentiment"], 3) for r in rows],
@@ -184,14 +192,32 @@ def get_macro_snapshot() -> dict | None:
                 WHERE m."CrudeOilPrice" IS NOT NULL) AS oil_as_of,
             (SELECT m."CrudeOilPrice" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
                 WHERE m."CrudeOilPrice" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS crude_oil_price,
-            (SELECT m."MarketBreadth" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
-                WHERE m."MarketBreadth" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS market_breadth,
-            (SELECT m."AAIISentiment" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
-                WHERE m."AAIISentiment" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS aaii_sentiment,
             (SELECT m."BitcoinPrice" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
                 WHERE m."BitcoinPrice" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS bitcoin_price,
             (SELECT m."KospiIndex" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
-                WHERE m."KospiIndex" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS kospi_index
+                WHERE m."KospiIndex" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS kospi_index,
+            (SELECT m."TenYearYieldChangePct" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."TenYearYield" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS ten_year_change_pct,
+            (SELECT m."TwoYearYieldChangePct" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."TwoYearYield" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS two_year_change_pct,
+            (SELECT m."CrudeOilChangePct" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."CrudeOilPrice" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS crude_oil_change_pct,
+            (SELECT m."BitcoinChangePct" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."BitcoinPrice" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS bitcoin_change_pct,
+            (SELECT m."KospiChangePct" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."KospiIndex" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS kospi_change_pct,
+            (SELECT m."SP500Index" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."SP500Index" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS sp500_index,
+            (SELECT m."SP500ChangePct" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."SP500Index" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS sp500_change_pct,
+            (SELECT m."NasdaqIndex" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."NasdaqIndex" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS nasdaq_index,
+            (SELECT m."NasdaqChangePct" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."NasdaqIndex" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS nasdaq_change_pct,
+            (SELECT m."RSPPrice" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."RSPPrice" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS rsp_price,
+            (SELECT m."RSPChangePct" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."RSPPrice" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS rsp_change_pct
         """
     )
     with get_engine().connect() as conn:
@@ -205,18 +231,32 @@ def get_macro_snapshot() -> dict | None:
     return {
         "as_of": as_of.isoformat(),
         "ten_year_yield": row["ten_year_yield"],
+        "ten_year_change_pct": row["ten_year_change_pct"],
         "two_year_yield": row["two_year_yield"],
+        "two_year_change_pct": row["two_year_change_pct"],
         "crude_oil_price": row["crude_oil_price"],
-        "market_breadth": row["market_breadth"],
-        "aaii_sentiment": row["aaii_sentiment"],
+        "crude_oil_change_pct": row["crude_oil_change_pct"],
         "bitcoin_price": row["bitcoin_price"],
+        "bitcoin_change_pct": row["bitcoin_change_pct"],
         "kospi_index": row["kospi_index"],
+        "kospi_change_pct": row["kospi_change_pct"],
+        "sp500_index": row["sp500_index"],
+        "sp500_change_pct": row["sp500_change_pct"],
+        "nasdaq_index": row["nasdaq_index"],
+        "nasdaq_change_pct": row["nasdaq_change_pct"],
+        "rsp_price": row["rsp_price"],
+        "rsp_change_pct": row["rsp_change_pct"],
         "macro_risk_alert": macro_risk_alert,
     }
 
 
 def get_sector_flows() -> list[dict]:
-    """Latest Accumulation/Distribution/Neutral status for all 11 sector SPDRs."""
+    """Latest Accumulation/Distribution/Neutral status for all 11 sector
+    SPDRs, plus each ETF's own 1-day price % change - computed live with the
+    same windowed LAG() query get_top_movers() uses (not stored: it's only
+    11 tickers, so recomputing it live is cheap, and it keeps one proven
+    pattern for "daily price % change" instead of a second stored copy that
+    could drift out of sync with FactDailyPrice)."""
     query = text(
         """
         SELECT DISTINCT ON (a."Ticker")
@@ -229,8 +269,38 @@ def get_sector_flows() -> list[dict]:
         ORDER BY a."Ticker", d."Date" DESC
         """
     )
+    change_query = text(
+        """
+        WITH recent AS (
+            SELECT p."AssetKey", d."Date", p."Close"
+            FROM "FactDailyPrice" p
+            JOIN "DimDate" d ON d."DateKey" = p."DateKey"
+            JOIN "DimAsset" a ON a."AssetKey" = p."AssetKey"
+            WHERE a."Ticker" = ANY(:tickers) AND d."Date" >= CURRENT_DATE - INTERVAL '10 days'
+        ),
+        ranked AS (
+            SELECT
+                "AssetKey", "Date", "Close",
+                LAG("Close") OVER (PARTITION BY "AssetKey" ORDER BY "Date") AS prev_close,
+                ROW_NUMBER() OVER (PARTITION BY "AssetKey" ORDER BY "Date" DESC) AS rn
+            FROM recent
+        )
+        SELECT a."Ticker", r."Close", r."prev_close"
+        FROM ranked r
+        JOIN "DimAsset" a ON a."AssetKey" = r."AssetKey"
+        WHERE r.rn = 1
+        """
+    )
     with get_engine().connect() as conn:
         rows = conn.execute(query, {"tickers": SECTOR_SPDR_TICKERS}).mappings().all()
+        change_rows = conn.execute(change_query, {"tickers": SECTOR_SPDR_TICKERS}).mappings().all()
+
+    change_by_ticker = {
+        r["Ticker"]: round((r["Close"] - r["prev_close"]) / r["prev_close"] * 100, 2)
+        for r in change_rows
+        if r["prev_close"]
+    }
+
     return [
         {
             "ticker": r["Ticker"],
@@ -238,6 +308,7 @@ def get_sector_flows() -> list[dict]:
             "as_of": r["Date"].isoformat(),
             "volume_ratio": round(r["VolumeRatio"], 2) if r["VolumeRatio"] is not None else None,
             "flow_status": r["FlowStatus"],
+            "daily_change_pct": change_by_ticker.get(r["Ticker"]),
         }
         for r in rows
     ]
