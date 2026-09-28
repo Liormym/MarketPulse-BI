@@ -25,8 +25,6 @@ MarketPulse BI is a **decision support system**, not a trading bot. It doesn't p
 
 ## Screenshots
 
-> 📸 *Placeholders below — replace with real captures once available.*
-
 | Market Dashboard | Stock Deep-Dive |
 |---|---|
 | ![Market Dashboard](docs/images/dashboard.png) | ![Deep Dive Dashboard](docs/images/deep_dive.png) |
@@ -36,6 +34,13 @@ MarketPulse BI is a **decision support system**, not a trading bot. It doesn't p
 |---|---|
 | ![Score Rationale](docs/images/score_rationale.png) | ![Positioning Panel](docs/images/positioning_panel.png) |
 | The full audit trail behind the Investment Score — every rule that fired, in plain English, with its point contribution. | Short interest, insider Form 4 filings, and a flagged CEO/CFO sale — the governance signals a fundamentals desk would check by hand. |
+
+### Market Intelligence, Not Just a Stock Screener
+
+| Sector Money-Flow | Top Movers |
+|---|---|
+| ![Sector Money-Flow](docs/images/sector_money_flow.png) | ![Top Movers](docs/images/top_movers.png) |
+| Accumulation/Distribution/Neutral status for all 11 sector SPDRs, ranked by volume ratio — where institutional money is rotating *today*. | The day's largest movers across the full watchlist, ranked by absolute % change, color-coded and one click from a full deep-dive. |
 
 ---
 
