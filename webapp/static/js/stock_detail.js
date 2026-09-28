@@ -477,6 +477,21 @@ function renderPatternHints(hints) {
 // response lands, the stale response must not overwrite the newer one.
 let latestRequestedTicker = null;
 
+function renderHeroPrice(data) {
+  const priceEl = document.getElementById("hero-price");
+  const changeEl = document.getElementById("hero-change");
+  priceEl.textContent = data.latest_price != null ? `$${data.latest_price.toFixed(2)}` : "";
+  if (data.daily_change_pct == null) {
+    changeEl.textContent = "";
+    changeEl.className = "hero-change";
+    return;
+  }
+  const cls = data.daily_change_pct >= 0 ? "positive" : "negative";
+  const sign = data.daily_change_pct >= 0 ? "+" : "";
+  changeEl.textContent = `${sign}${data.daily_change_pct.toFixed(2)}%`;
+  changeEl.className = `hero-change ${cls}`;
+}
+
 async function loadTicker(ticker) {
   latestRequestedTicker = ticker;
   const res = await fetch(`/api/stock/${encodeURIComponent(ticker)}`);
@@ -485,6 +500,8 @@ async function loadTicker(ticker) {
   if (!res.ok) {
     companyNameEl.textContent = "Ticker not found";
     companyTickerEl.textContent = ticker.toUpperCase();
+    document.getElementById("hero-price").textContent = "";
+    document.getElementById("hero-change").textContent = "";
     return;
   }
   const data = await res.json();
@@ -492,6 +509,7 @@ async function loadTicker(ticker) {
 
   companyNameEl.textContent = data.name;
   companyTickerEl.textContent = data.ticker;
+  renderHeroPrice(data);
   renderScore(data.score, data.score_detail);
   currentData = data;
   applyTimeframe(currentRange);

@@ -193,6 +193,24 @@ html, body {
 .macro-risk-banner.hidden { display: none; }
 .macro-risk-icon { font-size: 16px; }
 
+/* Daily Market Leader banner (Sector Money-Flow) */
+.sector-leader-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-md);
+  background: var(--pos-soft);
+  border: 1px solid rgba(22, 242, 163, 0.35);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sector-leader-banner strong { color: var(--pos); }
+.sector-leader-banner.hidden { display: none; }
+
 /* Top 5 Strong Buys widget (dashboard) */
 .strong-buys-panel {
   background: linear-gradient(160deg, var(--surface-2), var(--surface));
@@ -289,6 +307,13 @@ html, body {
   font-weight: 700;
 }
 
+.hero-price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .hero-ticker {
   font-family: var(--font-mono);
   font-size: 14px;
@@ -296,6 +321,22 @@ html, body {
   color: var(--accent);
   letter-spacing: 0.5px;
 }
+
+.hero-price {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.hero-change {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.hero-change.positive { color: var(--pos); }
+.hero-change.negative { color: var(--neg); }
 
 /* Score card */
 .score-card {
@@ -549,6 +590,16 @@ html, body {
   font-weight: 500;
 }
 
+.macro-tile-change {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.macro-tile-change.positive { color: var(--pos); }
+.macro-tile-change.negative { color: var(--neg); }
+
 /* Generic panel (used for sector table, movers grid, technical/risk, etc.) */
 .panel {
   background: var(--surface-2);
@@ -607,6 +658,13 @@ html, body {
 
 .data-table tr.clickable { cursor: pointer; transition: background 0.1s ease; }
 .data-table tr.clickable:hover { background: var(--surface); }
+
+/* Volatility highlight: a sector (or any row using this pattern) moving
+   more than 1% in a day gets a faint tint so it's spottable at a glance -
+   text stays var(--text)/var(--pos)/var(--neg), never recolored, so it
+   stays readable against the tint. */
+.row-surge-up { background: rgba(22, 242, 163, 0.1); }
+.row-surge-down { background: rgba(255, 77, 106, 0.1); }
 
 .flow-tag {
   font-size: 11px;
