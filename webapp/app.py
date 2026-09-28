@@ -22,7 +22,7 @@ import db  # noqa: E402
 from marketpulse.live_refresh import refresh_ticker  # noqa: E402
 from marketpulse.load.db import get_engine  # noqa: E402
 from marketpulse.pattern_detection import detect_patterns  # noqa: E402
-from marketpulse.scoring import SENTIMENT_LOOKBACK_DAYS, compute_investment_score  # noqa: E402
+from marketpulse.scoring import compute_investment_score  # noqa: E402
 from marketpulse.technicals import describe_gap  # noqa: E402
 from rate_limit import check_and_record_refresh  # noqa: E402
 
@@ -106,23 +106,8 @@ def api_stock(ticker: str):
 
     enrichment = db.enrich_stock(ticker)
     data["enrichment"] = enrichment
-    has_recent_executive_sale = bool(enrichment and enrichment["has_recent_executive_sale"])
 
-    breakdown = compute_investment_score(
-        closes=data["prices"],
-        volumes=data["volumes"],
-        sma20_series=data["sma20"],
-        sma50_series=data["sma50"],
-        sma200_series=data["sma200"],
-        recent_sentiment=data["sentiment"][-SENTIMENT_LOOKBACK_DAYS:],
-        atr14=data["atr14"],
-        atr_90d_avg=data["atr_90d_avg"],
-        atr_90d_std=data["atr_90d_std"],
-        avg_volume_20d=data["avg_volume_20d"],
-        sector_flow_status=sector_flow["flow_status"] if sector_flow else None,
-        short_percent_of_float=enrichment["short_percent_of_float"] if enrichment else None,
-        has_recent_executive_sale=has_recent_executive_sale,
-    )
+    breakdown = compute_investment_score(**db.build_score_kwargs(data, sector_flow, enrichment))
     data["score"] = breakdown.score
     data["score_detail"] = {
         "sentiment_points": breakdown.sentiment_points,

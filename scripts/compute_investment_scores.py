@@ -4,12 +4,27 @@ dashboard's "Top 5 Strong Buys" widget is a fast indexed SELECT instead of
 recomputing ~500+ per-ticker scores (each needing price/technicals/
 sentiment/sector-flow joins) on every page load.
 
-Short interest / insider-sale enrichment uses whatever is already cached in
-StockEnrichmentCache/InsiderTransactions - this script does NOT trigger new
-yfinance fetches per ticker. That fetch-on-view + cache is enrichment.py's
-job (see webapp/db.py's enrich_stock, called only for the single ticker a
-user is actively viewing); doing it here for the whole watchlist would mean
-500+ live yfinance calls on every run.
+compute_score_for_ticker() below runs the EXACT SAME pipeline as the live
+/api/stock/<ticker> route (webapp/app.py's api_stock): get_price_sentiment_
+history + get_sector_flows + enrich_stock, assembled into
+compute_investment_score()'s kwargs by the shared db.build_score_kwargs().
+This used to be two independently hand-written pipelines, and they
+silently diverged - this script's own enrichment lookup read only whatever
+was already cached (no yfinance fetch), while the live route fetches fresh
+on a cache miss via enrich_stock(). A ticker nobody had ever viewed yet
+would score with no insider-selling penalty here but the correct penalty on
+its own /stock/<ticker> page: the same ticker, two different numbers,
+depending only on which screen you looked at. Routing both entry points
+through one shared pipeline makes that class of bug structurally impossible
+- see tests/test_score_consistency.py, which asserts the two entry points
+agree.
+
+One consequence of sharing enrich_stock(): this script now WILL trigger a
+yfinance call for any ticker whose enrichment cache is empty or older than
+enrichment.CACHE_TTL (24h), same as visiting that ticker's page would. Run
+it on a schedule at that same ~24h cadence (like the other CronJobs) and
+most tickers hit a warm cache; a fully cold run does mean ~550 yfinance
+calls once.
 
 Skips non-equity assets (Sector "Index"/"ETF") - the watchlist also tracks
 macro reference instruments (e.g. ^KS11/KOSPI, the sector SPDR ETFs used by
@@ -32,40 +47,35 @@ from sqlalchemy import text  # noqa: E402
 
 import db as webapp_db  # noqa: E402
 from marketpulse.load.db import get_engine  # noqa: E402
-from marketpulse.scoring import SENTIMENT_LOOKBACK_DAYS, compute_investment_score  # noqa: E402
+from marketpulse.scoring import ScoreBreakdown, compute_investment_score  # noqa: E402
 
 NON_EQUITY_SECTORS = {"Index", "ETF"}
 
 
-def _cached_enrichment(conn, asset_key: int) -> tuple[float | None, bool]:
-    """Reads whatever short-interest/insider-sale data is already cached for
-    this asset, without triggering a fresh yfinance fetch (see module
-    docstring)."""
-    row = conn.execute(
-        text('SELECT "ShortPercentOfFloat" FROM "StockEnrichmentCache" WHERE "AssetKey" = :asset_key'),
-        {"asset_key": asset_key},
-    ).first()
-    short_percent_of_float = row[0] if row else None
+def compute_score_for_ticker(ticker: str, sector_flows: dict | None = None) -> ScoreBreakdown | None:
+    """Computes the Investment Score for one ticker via the exact pipeline
+    the live route uses. `sector_flows` lets a batch run reuse one
+    get_sector_flows() query across every ticker instead of re-querying it
+    per ticker; omit it (e.g. from a single-ticker call) and it's fetched
+    fresh. Returns None if the ticker has no price history at all."""
+    data = webapp_db.get_price_sentiment_history(ticker)
+    if data is None:
+        return None
 
-    exec_sale = conn.execute(
-        text(
-            """
-            SELECT 1 FROM "InsiderTransactions"
-            WHERE "AssetKey" = :asset_key AND "IsExecutiveSale" = TRUE
-              AND "TransactionDate" >= CURRENT_DATE - INTERVAL '90 days'
-            LIMIT 1
-            """
-        ),
-        {"asset_key": asset_key},
-    ).first()
-    return short_percent_of_float, exec_sale is not None
+    if sector_flows is None:
+        sector_flows = {s["ticker"]: s for s in webapp_db.get_sector_flows()}
+    sector_flow = sector_flows.get(data["sector_spdr"])
+
+    enrichment = webapp_db.enrich_stock(ticker)
+
+    return compute_investment_score(**webapp_db.build_score_kwargs(data, sector_flow, enrichment))
 
 
 def main() -> None:
     engine = get_engine()
     # Sector flow is keyed by the sector's SPDR ETF ticker (e.g. "XLK"), the
     # same lookup db.get_price_sentiment_history() resolves per stock as
-    # data["sector_spdr"].
+    # data["sector_spdr"]. Fetched once and reused across every ticker below.
     sector_flows = {s["ticker"]: s for s in webapp_db.get_sector_flows()}
 
     tickers = webapp_db.get_tickers()
@@ -84,30 +94,8 @@ def main() -> None:
                 n_skipped += 1
                 continue
 
-            data = webapp_db.get_price_sentiment_history(ticker)
-            if data is None:
-                n_skipped += 1
-                continue
-
-            sector_flow = sector_flows.get(data["sector_spdr"])
-            short_percent_of_float, has_recent_executive_sale = _cached_enrichment(conn, asset_key)
-
-            breakdown = compute_investment_score(
-                closes=data["prices"],
-                volumes=data["volumes"],
-                sma20_series=data["sma20"],
-                sma50_series=data["sma50"],
-                sma200_series=data["sma200"],
-                recent_sentiment=data["sentiment"][-SENTIMENT_LOOKBACK_DAYS:],
-                atr14=data["atr14"],
-                atr_90d_avg=data["atr_90d_avg"],
-                atr_90d_std=data["atr_90d_std"],
-                avg_volume_20d=data["avg_volume_20d"],
-                sector_flow_status=sector_flow["flow_status"] if sector_flow else None,
-                short_percent_of_float=short_percent_of_float,
-                has_recent_executive_sale=has_recent_executive_sale,
-            )
-            if breakdown.score is None:
+            breakdown = compute_score_for_ticker(ticker, sector_flows=sector_flows)
+            if breakdown is None or breakdown.score is None:
                 n_skipped += 1
                 continue
 

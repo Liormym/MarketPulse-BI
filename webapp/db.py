@@ -13,6 +13,7 @@ if SRC_PATH not in sys.path:
 from sqlalchemy import text  # noqa: E402
 
 from marketpulse.load.db import get_engine  # noqa: E402
+from marketpulse.scoring import SENTIMENT_LOOKBACK_DAYS  # noqa: E402
 from marketpulse.sector_flow import SECTOR_SPDR_TICKERS, SECTOR_TO_SPDR  # noqa: E402
 
 # Historically, elevated yields/oil have put sustained pressure on equity
@@ -128,6 +129,41 @@ def get_price_sentiment_history(ticker: str) -> dict | None:
         "atr_90d_std": _round(latest_technicals["ATR90Std"], 2) if latest_technicals else None,
         "avg_volume_20d": _round(latest_technicals["AvgVolume20D"], 0) if latest_technicals else None,
     }
+
+
+def build_score_kwargs(data: dict, sector_flow: dict | None, enrichment: dict | None) -> dict:
+    """Assembles the exact kwargs compute_investment_score() needs, given
+    the raw ingredients (a get_price_sentiment_history() payload, a
+    get_sector_flows() row, and an enrich_stock() result).
+
+    This is the SINGLE SOURCE for that assembly - webapp/app.py's
+    /api/stock/<ticker> route and scripts/compute_investment_scores.py both
+    call it rather than each building the kwargs list by hand. That's a
+    direct fix for a real bug: the batch script used to hand-roll its own
+    enrichment lookup (cached-only, no yfinance fetch) instead of calling
+    enrich_stock() like the live route does, so a ticker whose enrichment
+    cache was empty or stale silently scored without the insider-selling
+    penalty in the batch path while the live route (which fetches fresh on a
+    cache miss) applied it - two different numbers for the same ticker,
+    depending only on which screen you looked at. Routing both entry points
+    through one assembly function makes that class of drift structurally
+    impossible, not just coincidentally avoided.
+    """
+    return dict(
+        closes=data["prices"],
+        volumes=data["volumes"],
+        sma20_series=data["sma20"],
+        sma50_series=data["sma50"],
+        sma200_series=data["sma200"],
+        recent_sentiment=data["sentiment"][-SENTIMENT_LOOKBACK_DAYS:],
+        atr14=data["atr14"],
+        atr_90d_avg=data["atr_90d_avg"],
+        atr_90d_std=data["atr_90d_std"],
+        avg_volume_20d=data["avg_volume_20d"],
+        sector_flow_status=sector_flow["flow_status"] if sector_flow else None,
+        short_percent_of_float=enrichment["short_percent_of_float"] if enrichment else None,
+        has_recent_executive_sale=bool(enrichment and enrichment["has_recent_executive_sale"]),
+    )
 
 
 def get_macro_snapshot() -> dict | None:
