@@ -623,6 +623,23 @@ html, body {
   font-weight: 700;
 }
 
+/* Data-freshness badge (Macro & Market Regime, Sector Money-Flow) - a
+   financial dashboard is dangerous if the user can't tell how stale the
+   numbers are, especially pre-market, so this gets a bordered pill instead
+   of plain muted text. */
+.freshness-badge {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 .panel-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
