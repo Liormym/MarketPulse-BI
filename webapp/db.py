@@ -178,7 +178,11 @@ def get_macro_snapshot() -> dict | None:
     """Latest known value for each macro indicator, independently - yields
     (FRED) and oil (yfinance) don't always publish for the same trading day,
     so picking a single "latest row" can null out a field that actually has
-    a more recent value a day or two back."""
+    a more recent value a day or two back. `as_of` is the MAX across every
+    series' own latest date (not just yields/oil) - Bitcoin trades 24/7 and
+    can be a day fresher than the FRED-sourced yields, so the dashboard's
+    freshness badge should reflect whichever series is actually newest, not
+    understate it by only checking two of the eight tracked series."""
     query = text(
         """
         SELECT
@@ -190,6 +194,16 @@ def get_macro_snapshot() -> dict | None:
                 WHERE m."TwoYearYield" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS two_year_yield,
             (SELECT MAX(d."Date") FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
                 WHERE m."CrudeOilPrice" IS NOT NULL) AS oil_as_of,
+            (SELECT MAX(d."Date") FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."BitcoinPrice" IS NOT NULL) AS bitcoin_as_of,
+            (SELECT MAX(d."Date") FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."KospiIndex" IS NOT NULL) AS kospi_as_of,
+            (SELECT MAX(d."Date") FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."SP500Index" IS NOT NULL) AS sp500_as_of,
+            (SELECT MAX(d."Date") FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."NasdaqIndex" IS NOT NULL) AS nasdaq_as_of,
+            (SELECT MAX(d."Date") FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+                WHERE m."RSPPrice" IS NOT NULL) AS rsp_as_of,
             (SELECT m."CrudeOilPrice" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
                 WHERE m."CrudeOilPrice" IS NOT NULL ORDER BY d."Date" DESC LIMIT 1) AS crude_oil_price,
             (SELECT m."BitcoinPrice" FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
@@ -222,9 +236,14 @@ def get_macro_snapshot() -> dict | None:
     )
     with get_engine().connect() as conn:
         row = conn.execute(query).mappings().first()
-    if row is None or (row["ten_year_as_of"] is None and row["oil_as_of"] is None):
+    as_of_candidates = [
+        row[key]
+        for key in ("ten_year_as_of", "oil_as_of", "bitcoin_as_of", "kospi_as_of", "sp500_as_of", "nasdaq_as_of", "rsp_as_of")
+    ] if row is not None else []
+    as_of_candidates = [d for d in as_of_candidates if d is not None]
+    if not as_of_candidates:
         return None
-    as_of = max(d for d in (row["ten_year_as_of"], row["oil_as_of"]) if d is not None)
+    as_of = max(as_of_candidates)
     macro_risk_alert = (
         row["ten_year_yield"] is not None and row["ten_year_yield"] > MACRO_RISK_10Y_YIELD_THRESHOLD
     ) or (row["crude_oil_price"] is not None and row["crude_oil_price"] > MACRO_RISK_OIL_THRESHOLD)

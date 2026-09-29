@@ -32,6 +32,11 @@ async function loadMacro() {
   const res = await fetch("/api/macro");
   const data = await res.json();
 
+  const asOfEl = document.getElementById("macro-asof");
+  if (asOfEl) {
+    asOfEl.textContent = data.as_of ? `Live as of: ${data.as_of}` : "";
+  }
+
   document.getElementById("macro-10y").textContent = fmtPct(data.ten_year_yield);
   renderMacroChange("macro-10y-change", data.ten_year_change_pct);
   document.getElementById("macro-2y").textContent = fmtPct(data.two_year_yield);
