@@ -230,6 +230,50 @@ Visit **http://localhost:5050** — the Market Dashboard loads at `/`, and any t
 
 ---
 
+## Daily Automation (End-of-Day Pipeline)
+
+A quantitative system is only as trustworthy as its most stale input. Sector flows, technicals, and Investment Scores all depend on the day's price data being fresh — if any one of those steps runs out of order, or on its own schedule disconnected from the others, the dashboard can end up telling two different stories about "today" (exactly what the freshness badges in the Macro and Sector panels are designed to catch).
+
+`scripts/run_daily_update.py` is the single entry point that runs the full refresh in the dependency order that actually matters:
+
+1. **Fetch macro indicators** (`fetch_macro_indicators.py`) — yields, oil, Bitcoin, KOSPI, S&P 500, NASDAQ, RSP
+2. **Fetch fresh prices, news & sentiment** (`python -m marketpulse.pipeline`) — the trailing-window daily pipeline, not the one-time full backfill
+3. **Recompute technicals** (`compute_stock_technicals.py`) — SMA/ATR/gap, from step 2's prices
+4. **Compute sector flows** (`compute_sector_flows.py`) — Accumulation/Distribution/Neutral, from step 2's prices
+5. **Compute Investment Scores** (`compute_investment_scores.py`) — from steps 2–4's output
+
+It stops at the first failing step rather than pressing on with partial data:
+
+```bash
+PYTHONPATH=src python scripts/run_daily_update.py
+```
+
+### Running it automatically
+
+`scripts/scheduler.py` is a small `schedule`-based daemon that triggers the update above at **23:10** every US market weekday (30 minutes after the market close CronJob window used elsewhere in this repo). Each firing runs the orchestrator as a subprocess, so a failed pipeline run can't crash the daemon itself — it just logs the failure and waits for the next weekday.
+
+Start it in the background and leave it running (e.g. in `tmux`/`screen`, or with `nohup`):
+
+```bash
+# tmux (recommended for a dev machine you keep logged into)
+tmux new -s marketpulse-scheduler
+PYTHONPATH=src python scripts/scheduler.py
+# detach with Ctrl+B then D; reattach later with: tmux attach -t marketpulse-scheduler
+
+# or nohup, if you'd rather not use tmux
+PYTHONPATH=src nohup python scripts/scheduler.py > scheduler.log 2>&1 &
+```
+
+**For a production deployment, prefer `cron` (or the `k8s/pipeline-cronjob.yaml` CronJob already in this repo) over a long-lived Python daemon** — a scheduler process is one more thing that can silently die on a dev machine. The equivalent crontab entry:
+
+```cron
+10 23 * * 1-5 cd /path/to/MarketPulseAI && PYTHONPATH=src /path/to/.venv/bin/python scripts/run_daily_update.py >> /var/log/marketpulse-eod.log 2>&1
+```
+
+`10 23 * * 1-5` reads as: minute 10, hour 23, every day-of-month, every month, weekdays 1–5 (Monday–Friday) — the same schedule `scheduler.py` runs on.
+
+---
+
 ## Testing
 
 ```bash
@@ -261,7 +305,8 @@ webapp/                 Flask application
 └── static/                    CSS + Chart.js frontend
 
 db/migrations/          Versioned SQL schema
-scripts/                 One-off backfills, computations & data fixes
+scripts/                 One-off backfills, computations, data fixes,
+                          and the daily EOD orchestrator + scheduler
 tests/                    pytest suite
 config/watchlist.yaml     The 560-ticker universe
 ```
