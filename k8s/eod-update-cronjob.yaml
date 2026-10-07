@@ -1,0 +1,42 @@
+# Single end-of-day job. Runs scripts/run_daily_update.py, which executes the
+# five EOD steps in dependency order and stops at the first failure:
+#   macro -> prices/news/sentiment -> technicals -> sector flows -> scores
+# Replaces the former independent pipeline and derived-data CronJobs, which
+# could recompute on stale upstream data after a failed run.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: marketpulse-eod-update
+  namespace: marketpulse
+spec:
+  schedule: "30 17 * * 1-5"
+  timeZone: "America/New_York" # 17:30 ET, 90 minutes after the 16:00 close; stays aligned across DST
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      # Local run on the dev Mac: 1432 s of awake time (pipeline 368 s, technicals 802 s, scores 252 s).
+      # 3600 s is ~2.5x that; re-measure on the k3s VM before go-live.
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: eod-update
+              image: marketpulse-pipeline:latest # build locally with docker/pipeline.Dockerfile
+              command: ["python", "scripts/run_daily_update.py"]
+              envFrom:
+                - secretRef:
+                    name: marketpulse-db-credentials
+                - configMapRef:
+                    name: marketpulse-config
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1280Mi" # local pipeline step peaked at ~1.08 GB RSS with FinBERT loaded
+                limits:
+                  cpu: "2"
+                  memory: "2Gi"

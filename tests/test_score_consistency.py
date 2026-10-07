@@ -17,6 +17,7 @@ to the same helper, so it would have caught the original bug.
 Requires the dev DB to be up and migrated, and AAPL to have
 >= MIN_PRICES_FOR_SCORE days of price history (see README).
 """
+import pytest
 import sys
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from compute_investment_scores import compute_score_for_ticker  # noqa: E402
 TICKER = "AAPL"
 
 
+@pytest.mark.populated_db
 def test_batch_and_live_paths_compute_the_identical_score_for_the_same_ticker():
     client = flask_app.app.test_client()
     resp = client.get(f"/api/stock/{TICKER}")

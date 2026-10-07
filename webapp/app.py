@@ -8,7 +8,6 @@ score - see that module for the point budget and every rule it applies.
 Pattern-detection hints (marketpulse.pattern_detection) are surfaced
 alongside it but are NOT part of that score - see that module's docstring.
 """
-import os
 import sys
 from pathlib import Path
 
@@ -16,20 +15,20 @@ SRC_PATH = str(Path(__file__).resolve().parents[1] / "src")
 if SRC_PATH not in sys.path:
     sys.path.insert(0, SRC_PATH)
 
-from flask import Flask, jsonify, render_template, session  # noqa: E402
+from flask import Flask, Response, jsonify, render_template, session  # noqa: E402
 
 import db  # noqa: E402
+from app_security import configure_app  # noqa: E402
+from marketpulse.config import settings  # noqa: E402
 from marketpulse.live_refresh import refresh_ticker  # noqa: E402
 from marketpulse.load.db import get_engine  # noqa: E402
 from marketpulse.pattern_detection import detect_patterns  # noqa: E402
 from marketpulse.scoring import compute_investment_score  # noqa: E402
-from marketpulse.technicals import describe_gap  # noqa: E402
+from marketpulse.technicals import RSI_OVERBOUGHT, RSI_OVERSOLD, describe_gap, describe_rsi  # noqa: E402
 from rate_limit import check_and_record_refresh  # noqa: E402
 
 app = Flask(__name__)
-# Regenerated on each process start - fine for a local, single-operator dev
-# tool; it just means refresh-rate-limit history resets on restart too.
-app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24)
+configure_app(app, settings)
 
 
 @app.route("/health")
@@ -52,6 +51,31 @@ def readiness():
         return jsonify({"status": "ready"})
     except Exception as exc:
         return jsonify({"status": "not_ready", "error": str(exc)}), 503
+
+
+def _static_file_response(filename: str, mimetype: str):
+    # Deliberately NOT send_from_directory: its conditional-response path
+    # (ETag/Last-Modified/Range) double-sends the Date header under
+    # Werkzeug's dev server, which the service-worker script-fetch
+    # algorithm's stricter validation rejects outright (plain <link>/fetch
+    # loads tolerate it, registering a SW does not). Reading the bytes
+    # ourselves sidesteps that path entirely.
+    content = (Path(app.static_folder) / filename).read_bytes()
+    return Response(content, mimetype=mimetype)
+
+
+@app.route("/manifest.json")
+def pwa_manifest():
+    return _static_file_response("manifest.json", "application/manifest+json")
+
+
+@app.route("/sw.js")
+def pwa_service_worker():
+    # Served from root (not /static/sw.js) so its default scope is "/" and
+    # it can control navigations, not just files under /static/.
+    response = _static_file_response("sw.js", "application/javascript")
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.route("/")
@@ -105,7 +129,10 @@ def api_stock(ticker: str):
     data["sector_flow"] = sector_flow
 
     enrichment = db.enrich_stock(ticker)
+    data["fundamentals"] = (enrichment or {}).pop("fundamentals", None)
     data["enrichment"] = enrichment
+    data["rsi_state"] = describe_rsi(data["rsi14"])
+    data["rsi_thresholds"] = {"oversold": RSI_OVERSOLD, "overbought": RSI_OVERBOUGHT}
 
     breakdown = compute_investment_score(**db.build_score_kwargs(data, sector_flow, enrichment))
     data["score"] = breakdown.score

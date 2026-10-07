@@ -1,8 +1,7 @@
 """Daemon: triggers scripts/run_daily_update.py at 23:10 on every US market
 weekday (Mon-Fri), the equivalent of the cron expression `10 23 * * 1-5` -
-30 minutes after the pipeline CronJob schedule already documented in
-k8s/pipeline-cronjob.yaml, giving the market close time to settle before
-the EOD update runs. This process is meant to be left running in the
+the same entry point as the CronJob in k8s/eod-update-cronjob.yaml, giving
+the market close time to settle before the EOD update runs. This process is meant to be left running in the
 background (see README.md for nohup/tmux instructions); for a real
 production deployment, prefer the equivalent crontab entry or the existing
 k8s/ CronJob pattern instead of a long-lived Python daemon - this script is

@@ -4,6 +4,13 @@ Handles rate limiting per spec §10: on 429/timeout, retries up to 3 times with
 exponential backoff; if a ticker still fails, it's logged and skipped so the
 rest of the pipeline continues (never a fatal error for a single ticker).
 
+Tickers are fetched concurrently (bounded by settings.price_max_workers) and
+every request start goes through the shared outbound rate limiter. Each ticker
+still gets its own history() call, deliberately not yf.download(): download()
+fans out to the same per-ticker endpoint anyway, and on full-history requests
+its values differ from history() by ~1e-6 relative (and it turns Volume into
+float), which would make the backfill and the nightly upsert disagree.
+
 Rows with Volume == 0 are dropped rather than stored. yfinance returns a
 phantom row (stale carried-forward Close, zero volume) for exchange-specific
 non-trading days it doesn't otherwise account for - e.g. the Tel Aviv Stock
@@ -15,14 +22,15 @@ from this and is discarded the same way - true zero-volume trading days are
 not meaningful for the rolling averages this data feeds either.
 """
 import logging
-import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 
 import yfinance as yf
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from ..config import settings
+from .ratelimit import OUTBOUND_LIMITER
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +57,7 @@ class TickerFetchError(Exception):
     reraise=True,
 )
 def _fetch_one(ticker: str, period: str):
+    OUTBOUND_LIMITER.wait()
     try:
         hist = yf.Ticker(ticker).history(period=period, interval="1d", timeout=10)
     except Exception as exc:  # network/rate-limit errors surface as generic exceptions from yfinance
@@ -56,6 +65,32 @@ def _fetch_one(ticker: str, period: str):
     if hist is None or hist.empty:
         raise TickerFetchError(f"{ticker}: empty response")
     return hist
+
+
+def _records_from_history(ticker: str, hist) -> list[PriceRecord]:
+    records = []
+    for idx, row in hist.iterrows():
+        if int(row["Volume"]) == 0:
+            continue  # phantom non-trading-day row (or a true zero-volume day) - see module docstring
+        records.append(
+            PriceRecord(
+                ticker=ticker,
+                trade_date=idx.date(),
+                close=float(row["Close"]),
+                volume=int(row["Volume"]),
+                open=float(row["Open"]) if "Open" in row and row["Open"] == row["Open"] else None,
+                high=float(row["High"]) if "High" in row and row["High"] == row["High"] else None,
+                low=float(row["Low"]) if "Low" in row and row["Low"] == row["Low"] else None,
+            )
+        )
+    return records
+
+
+def _fetch_ticker(ticker: str, period: str):
+    try:
+        return ticker, _fetch_one(ticker, period), None
+    except TickerFetchError as exc:
+        return ticker, None, exc
 
 
 def fetch_prices(
@@ -67,31 +102,17 @@ def fetch_prices(
     available history) and takes precedence over `lookback_days`.
     """
     resolved_period = period or f"{lookback_days}d"
+
+    with ThreadPoolExecutor(max_workers=settings.price_max_workers) as pool:
+        results = list(pool.map(lambda t: _fetch_ticker(t, resolved_period), tickers))
+
     records: list[PriceRecord] = []
     failed: list[str] = []
-
-    for ticker in tickers:
-        try:
-            hist = _fetch_one(ticker, resolved_period)
-        except TickerFetchError as exc:
-            log.warning("giving up on %s after retries: %s", ticker, exc)
+    for ticker, hist, error in results:
+        if error is not None:
+            log.warning("giving up on %s after retries: %s", ticker, error)
             failed.append(ticker)
             continue
-
-        for idx, row in hist.iterrows():
-            if int(row["Volume"]) == 0:
-                continue  # phantom non-trading-day row (or a true zero-volume day) - see module docstring
-            records.append(
-                PriceRecord(
-                    ticker=ticker,
-                    trade_date=idx.date(),
-                    close=float(row["Close"]),
-                    volume=int(row["Volume"]),
-                    open=float(row["Open"]) if "Open" in row and row["Open"] == row["Open"] else None,
-                    high=float(row["High"]) if "High" in row and row["High"] == row["High"] else None,
-                    low=float(row["Low"]) if "Low" in row and row["Low"] == row["Low"] else None,
-                )
-            )
-        time.sleep(settings.request_throttle_seconds)
+        records.extend(_records_from_history(ticker, hist))
 
     return records, failed

@@ -1,0 +1,15 @@
+# Allowlist: only what the images actually COPY enters the build context.
+# (Keeps the ~1 GB .venv, .git, .env secrets, recordings and reports out.)
+*
+!requirements.txt
+!requirements-web.txt
+!src/
+!config/
+!db/
+!scripts/
+!webapp/
+
+# ...minus junk inside the allowed directories
+**/__pycache__/
+**/*.pyc
+**/*.pyo

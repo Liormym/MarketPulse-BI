@@ -10,6 +10,21 @@ let volumeChart = null;
 let currentData = null; // full, unfiltered dataset from the API
 let currentRange = "1Y";
 
+// Which chart series are shown. Only the price line is visible on first load;
+// SMAs and Sentiment stay in the legend (struck through) and toggle on by click.
+// Tracked here instead of relying on Chart.js's per-dataset state because
+// renderChart() swaps in brand-new dataset objects on every timeframe/ticker
+// change, which would otherwise reset the user's toggles.
+const DEFAULT_SERIES_VISIBLE = {
+  "Price (USD)": true,
+  "SMA 20": false,
+  "SMA 50": false,
+  "SMA 150": false,
+  "SMA 200": false,
+  "Sentiment": false,
+};
+const seriesVisible = { ...DEFAULT_SERIES_VISIBLE };
+
 const RANGE_DAYS = { "1M": 30, "6M": 182, "1Y": 365, "5Y": 365 * 5 };
 const SERIES_KEYS = ["dates", "prices", "opens", "volumes", "sentiment", "sma20", "sma50", "sma150", "sma200", "gap_pct"];
 const SHORT_TERM_POINT_COUNT = { "5D": 5 };
@@ -190,7 +205,7 @@ function renderChart(data) {
         smaDataset("SMA 150", data.sma150, "rgba(22, 242, 163, 0.7)"),
         smaDataset("SMA 200", data.sma200, "rgba(255, 77, 106, 0.7)"),
         sentimentMarkerDataset(data),
-      ],
+      ].map((ds) => ({ ...ds, hidden: !seriesVisible[ds.label] })),
     },
     options: {
       responsive: true,
@@ -202,6 +217,10 @@ function renderChart(data) {
           position: "top",
           align: "end",
           labels: { color: "#8892a3", boxWidth: 10, font: { size: 11, family: "'JetBrains Mono', monospace" } },
+          onClick: (event, item, legend) => {
+            Chart.defaults.plugins.legend.onClick(event, item, legend);
+            seriesVisible[item.text] = legend.chart.isDatasetVisible(item.datasetIndex);
+          },
         },
         tooltip: {
           backgroundColor: "#151b27",
@@ -318,6 +337,7 @@ function renderTechnicalPanel(data) {
   document.getElementById("metric-sma150").textContent = fmt(lastNonNull(data.sma150));
   document.getElementById("metric-sma200").textContent = fmt(lastNonNull(data.sma200));
   document.getElementById("metric-atr").textContent = fmt(data.atr14);
+  renderRsi(data);
   document.getElementById("metric-avgvol").textContent =
     data.avg_volume_20d != null ? Math.round(data.avg_volume_20d).toLocaleString() : "—";
 
@@ -333,6 +353,53 @@ function renderTechnicalPanel(data) {
     gapEl.textContent = "—";
     gapEl.className = "metric-value";
   }
+}
+
+const RSI_LABELS = { oversold: "Oversold", overbought: "Overbought", neutral: "Neutral" };
+
+function renderRsi(data) {
+  const valueEl = document.getElementById("metric-rsi");
+  const badgeEl = document.getElementById("rsi-badge");
+  if (data.rsi14 == null) {
+    valueEl.textContent = "—";
+    valueEl.className = "";
+    badgeEl.className = "rsi-badge";
+    badgeEl.textContent = "";
+    return;
+  }
+  valueEl.textContent = data.rsi14.toFixed(1);
+  valueEl.className = `rsi-value ${data.rsi_state}`;
+  badgeEl.className = `rsi-badge ${data.rsi_state}`;
+  badgeEl.textContent = RSI_LABELS[data.rsi_state] || "";
+}
+
+function formatMarketCap(value) {
+  if (value == null) return null;
+  const units = [[1e12, "T"], [1e9, "B"], [1e6, "M"]];
+  for (const [size, suffix] of units) {
+    if (value >= size) return `$${(value / size).toFixed(value / size >= 100 ? 0 : 2)}${suffix}`;
+  }
+  return `$${Math.round(value).toLocaleString()}`;
+}
+
+function renderFundamentalsPanel(fundamentals) {
+  const peEl = document.getElementById("metric-pe");
+  const mcapEl = document.getElementById("metric-mcap");
+  const betaEl = document.getElementById("metric-beta");
+  const asOfEl = document.getElementById("fundamentals-asof");
+
+  // "n/a" = fetched fine but the source has no value (loss-making company, ETF,
+  // crypto); "—" = nothing fetched at all.
+  const fetched = Boolean(fundamentals && fundamentals.as_of);
+  const missing = fetched ? "n/a" : "—";
+  const f = fundamentals || {};
+
+  peEl.textContent = f.trailing_pe != null ? `${f.trailing_pe.toFixed(1)}x` : missing;
+  peEl.title = f.trailing_pe == null && fetched ? "No positive trailing earnings (loss-making company, ETF or crypto)" : "";
+  mcapEl.textContent = formatMarketCap(f.market_cap) || missing;
+  betaEl.textContent = f.beta != null ? f.beta.toFixed(2) : missing;
+  betaEl.title = f.beta == null && fetched ? "Beta not reported for this instrument" : "Sensitivity to the overall market: 1.0 moves with it, above 1 swings harder";
+  asOfEl.textContent = fetched ? `Yahoo Finance · updated ${new Date(f.as_of).toLocaleDateString()}` : "";
 }
 
 function fmt(value) {
@@ -514,6 +581,7 @@ async function loadTicker(ticker) {
   currentData = data;
   applyTimeframe(currentRange);
   renderTechnicalPanel(data);
+  renderFundamentalsPanel(data.fundamentals);
   renderGovernancePanel(data.enrichment);
   renderMacroAlignmentPanel(data.sector_flow);
   renderScoreRationale(data.score_detail);

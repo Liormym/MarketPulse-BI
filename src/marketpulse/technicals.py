@@ -1,7 +1,10 @@
 """Per-stock technical/risk baselines: SMA-20/50/150/200, ATR-14 (plus its own
-90-day rolling mean/stdev, for a relative volatility read), 20-day average
-volume, and daily price gaps. Pure computation over price history already
-sitting in FactDailyPrice - no new data fetch involved.
+90-day rolling mean/stdev, for a relative volatility read), RSI-14, 20-day
+average volume, and daily price gaps. Pure computation over price history
+already sitting in FactDailyPrice - no new data fetch involved.
+
+RSI is informational only (like the pattern hints): it is displayed on the
+deep-dive page but is NOT an input to the Investment Score.
 
 Gap detection returns a structured GapInfo (direction + the prev-close/open
 price bounds), not just a bare percentage - see describe_gap(). This does
@@ -15,6 +18,9 @@ SMA_PERIODS = (20, 50, 150, 200)
 ATR_PERIOD = 14
 AVG_VOLUME_WINDOW = 20
 ATR_ZSCORE_WINDOW = 90  # trailing days of ATR14 readings used for the rolling mean/stdev
+RSI_PERIOD = 14
+RSI_OVERSOLD = 30.0  # below this reads as "oversold"
+RSI_OVERBOUGHT = 70.0  # above this reads as "overbought"
 
 
 @dataclass
@@ -45,12 +51,56 @@ class DayTechnicals:
     atr_90d_std: float | None
     avg_volume_20d: float | None
     gap_pct: float | None
+    rsi14: float | None = None
 
 
 def _sma(values: list[float], period: int) -> float | None:
     if len(values) < period:
         return None
     return sum(values[-period:]) / period
+
+
+def _rsi_from_averages(avg_gain: float, avg_loss: float) -> float | None:
+    if avg_loss == 0:
+        # Only gains -> 100. No movement at all -> RSI is undefined, not 50.
+        return 100.0 if avg_gain > 0 else None
+    return 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+
+
+def compute_rsi_series(closes: list[float], period: int = RSI_PERIOD) -> list[float | None]:
+    """Wilder's RSI, one value per close (None until `period` price changes
+    exist). The first average gain/loss is the plain mean of the first
+    `period` changes; every later one is smoothed as
+    (previous * (period - 1) + current) / period - the standard definition
+    charting platforms use, so values line up with what traders see elsewhere."""
+    rsi: list[float | None] = [None] * len(closes)
+    if len(closes) <= period:
+        return rsi
+
+    changes = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+    gains = [max(c, 0.0) for c in changes]
+    losses = [max(-c, 0.0) for c in changes]
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    rsi[period] = _rsi_from_averages(avg_gain, avg_loss)
+
+    for i in range(period, len(changes)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        rsi[i + 1] = _rsi_from_averages(avg_gain, avg_loss)
+    return rsi
+
+
+def describe_rsi(value: float | None) -> str | None:
+    """"oversold" / "overbought" / "neutral", or None if there is no RSI."""
+    if value is None:
+        return None
+    if value < RSI_OVERSOLD:
+        return "oversold"
+    if value > RSI_OVERBOUGHT:
+        return "overbought"
+    return "neutral"
 
 
 def _true_range(bar: DailyBar, prev_close: float | None) -> float | None:
@@ -85,6 +135,7 @@ def compute_technicals(bars: list[DailyBar]) -> list[DayTechnicals]:
     """bars ordered oldest-to-newest. Returns one DayTechnicals per input bar."""
     closes = [b.close for b in bars]
     volumes = [b.volume for b in bars]
+    rsi_values = compute_rsi_series(closes)
     true_ranges: list[float | None] = []
     atr_history: list[float] = []  # non-None ATR14 readings seen so far, oldest-to-newest
 
@@ -125,6 +176,7 @@ def compute_technicals(bars: list[DailyBar]) -> list[DayTechnicals]:
                 atr_90d_std=atr_90d_std,
                 avg_volume_20d=avg_volume,
                 gap_pct=gap_pct,
+                rsi14=rsi_values[i],
             )
         )
     return results
@@ -162,15 +214,15 @@ def compute_and_upsert_technicals_for_asset(conn, asset_key: int) -> int:
                 """
                 INSERT INTO "FactStockTechnicals"
                     ("AssetKey", "DateKey", "SMA20", "SMA50", "SMA150", "SMA200",
-                     "ATR14", "ATR90Avg", "ATR90Std", "AvgVolume20D", "GapPct")
+                     "ATR14", "ATR90Avg", "ATR90Std", "AvgVolume20D", "GapPct", "RSI14")
                 VALUES (:asset_key, :date_key, :sma20, :sma50, :sma150, :sma200,
-                        :atr14, :atr_90d_avg, :atr_90d_std, :avg_volume, :gap_pct)
+                        :atr14, :atr_90d_avg, :atr_90d_std, :avg_volume, :gap_pct, :rsi14)
                 ON CONFLICT ("AssetKey", "DateKey") DO UPDATE
                     SET "SMA20" = EXCLUDED."SMA20", "SMA50" = EXCLUDED."SMA50",
                         "SMA150" = EXCLUDED."SMA150", "SMA200" = EXCLUDED."SMA200",
                         "ATR14" = EXCLUDED."ATR14", "ATR90Avg" = EXCLUDED."ATR90Avg",
                         "ATR90Std" = EXCLUDED."ATR90Std", "AvgVolume20D" = EXCLUDED."AvgVolume20D",
-                        "GapPct" = EXCLUDED."GapPct"
+                        "GapPct" = EXCLUDED."GapPct", "RSI14" = EXCLUDED."RSI14"
                 """
             ),
             {
@@ -185,6 +237,7 @@ def compute_and_upsert_technicals_for_asset(conn, asset_key: int) -> int:
                 "atr_90d_std": t.atr_90d_std,
                 "avg_volume": t.avg_volume_20d,
                 "gap_pct": t.gap_pct,
+                "rsi14": t.rsi14,
             },
         )
     return len(rows)

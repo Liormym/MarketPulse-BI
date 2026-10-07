@@ -1,6 +1,7 @@
 """Idempotent PostgreSQL upserts. Re-running the pipeline on the same data
 never creates duplicate rows, per spec §5 step 7 / §12 acceptance criteria.
 """
+import json
 from datetime import date, datetime
 
 from sqlalchemy import text
@@ -102,3 +103,41 @@ def upsert_daily_sentiment(conn: Connection, daily_records, asset_keys: dict[str
         )
         count += 1
     return count
+
+
+def upsert_investment_score_history(conn: Connection, rows: list[dict]) -> int:
+    """Writes one FactInvestmentScoreHistory row per (asset, price bar).
+    Re-scoring the same bar (a weekend or holiday re-run, or a retry) rewrites
+    that row rather than adding a duplicate. Each row needs: asset_key,
+    date_key, score, sentiment_points, technical_points, positioning_points,
+    risk_modifier_points, close_price, short_percent_of_float, has_sentiment,
+    flags (dict), computed_at."""
+    if not rows:
+        return 0
+    payload = [{**row, "flags": json.dumps(row["flags"], sort_keys=True)} for row in rows]
+    conn.execute(
+        text(
+            """
+            INSERT INTO "FactInvestmentScoreHistory"
+                ("AssetKey", "DateKey", "Score", "SentimentPoints", "TechnicalPoints", "PositioningPoints",
+                 "RiskModifierPoints", "ClosePrice", "ShortPercentOfFloat", "HasSentiment", "Flags", "ComputedAt")
+            VALUES
+                (:asset_key, :date_key, :score, :sentiment_points, :technical_points, :positioning_points,
+                 :risk_modifier_points, :close_price, :short_percent_of_float, :has_sentiment,
+                 CAST(:flags AS JSONB), :computed_at)
+            ON CONFLICT ("AssetKey", "DateKey") DO UPDATE
+                SET "Score" = EXCLUDED."Score",
+                    "SentimentPoints" = EXCLUDED."SentimentPoints",
+                    "TechnicalPoints" = EXCLUDED."TechnicalPoints",
+                    "PositioningPoints" = EXCLUDED."PositioningPoints",
+                    "RiskModifierPoints" = EXCLUDED."RiskModifierPoints",
+                    "ClosePrice" = EXCLUDED."ClosePrice",
+                    "ShortPercentOfFloat" = EXCLUDED."ShortPercentOfFloat",
+                    "HasSentiment" = EXCLUDED."HasSentiment",
+                    "Flags" = EXCLUDED."Flags",
+                    "ComputedAt" = EXCLUDED."ComputedAt"
+            """
+        ),
+        payload,
+    )
+    return len(rows)

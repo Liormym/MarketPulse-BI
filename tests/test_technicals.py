@@ -1,3 +1,5 @@
+import pytest
+
 from marketpulse.technicals import (
     ATR_PERIOD,
     ATR_ZSCORE_WINDOW,
@@ -93,3 +95,78 @@ def test_describe_gap_none_without_a_prior_close():
 
 def test_describe_gap_none_when_price_did_not_gap():
     assert describe_gap(open_price=100.0, prev_close=100.0) is None
+
+
+# ---------------------------------------------------------------- RSI
+from marketpulse.technicals import (  # noqa: E402
+    RSI_OVERBOUGHT,
+    RSI_OVERSOLD,
+    RSI_PERIOD,
+    compute_rsi_series,
+    describe_rsi,
+)
+
+
+def test_rsi_matches_a_hand_computed_wilder_example():
+    # period=3, closes 10,11,12,11,13. Changes: +1,+1,-1,+2.
+    # Seed (mean of first 3 changes): avg_gain=2/3, avg_loss=1/3 -> RS=2 -> RSI=66.667
+    # Next (change +2), Wilder smoothing: avg_gain=(2/3*2+2)/3=10/9, avg_loss=(1/3*2+0)/3=2/9
+    #   RS=5 -> RSI=83.333
+    rsi = compute_rsi_series([10, 11, 12, 11, 13], period=3)
+    assert rsi[:3] == [None, None, None]
+    assert rsi[3] == pytest.approx(200 / 3)
+    assert rsi[4] == pytest.approx(250 / 3)
+
+
+def test_rsi_is_100_when_price_only_rises():
+    rsi = compute_rsi_series([float(i) for i in range(1, 40)])
+    assert rsi[RSI_PERIOD] == 100.0
+    assert rsi[-1] == 100.0
+
+
+def test_rsi_is_0_when_price_only_falls():
+    rsi = compute_rsi_series([float(100 - i) for i in range(40)])
+    assert rsi[-1] == pytest.approx(0.0)
+
+
+def test_rsi_is_undefined_for_a_perfectly_flat_price():
+    assert all(v is None for v in compute_rsi_series([50.0] * 40))
+
+
+def test_rsi_needs_more_closes_than_the_period():
+    assert compute_rsi_series([1.0] * RSI_PERIOD) == [None] * RSI_PERIOD
+    assert compute_rsi_series([]) == []
+
+
+def test_rsi_stays_within_bounds_on_noisy_data():
+    import random
+
+    rng = random.Random(7)
+    closes = [100.0]
+    for _ in range(500):
+        closes.append(max(1.0, closes[-1] * (1 + rng.uniform(-0.05, 0.05))))
+    values = [v for v in compute_rsi_series(closes) if v is not None]
+    assert values and all(0.0 <= v <= 100.0 for v in values)
+
+
+def test_rsi_has_no_lookahead():
+    closes = [100 + (i % 7) * 1.5 - (i % 3) for i in range(80)]
+    full = compute_rsi_series(closes)
+    for cut in (30, 50, 79):
+        assert compute_rsi_series(closes[: cut + 1])[cut] == pytest.approx(full[cut])
+
+
+def test_compute_technicals_carries_the_rsi_series():
+    bars = [DailyBar(open=c, high=c + 1, low=c - 1, close=c, volume=1000) for c in [100 + i * 0.5 for i in range(30)]]
+    results = compute_technicals(bars)
+    assert results[RSI_PERIOD - 1].rsi14 is None
+    assert results[RSI_PERIOD].rsi14 == 100.0
+
+
+def test_describe_rsi_zones_and_boundaries():
+    assert describe_rsi(None) is None
+    assert describe_rsi(RSI_OVERSOLD - 0.1) == "oversold"
+    assert describe_rsi(RSI_OVERSOLD) == "neutral"
+    assert describe_rsi(RSI_OVERBOUGHT) == "neutral"
+    assert describe_rsi(RSI_OVERBOUGHT + 0.1) == "overbought"
+    assert describe_rsi(50.0) == "neutral"

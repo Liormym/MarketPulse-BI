@@ -1,0 +1,3 @@
+-r requirements.txt
+# WSGI server for the webapp image only (the Flask dev server is for local use).
+gunicorn==26.2.0

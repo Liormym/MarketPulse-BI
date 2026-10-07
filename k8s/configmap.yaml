@@ -1,15 +1,21 @@
-# Non-secret runtime config, shared by the pipeline CronJob, the derived-data
-# CronJob, and the webapp Deployment. Credentials stay in
-# marketpulse-db-credentials (see secrets.example.yaml) - never mixed in here.
+# Non-secret runtime config, shared by the EOD CronJob and the webapp
+# Deployment. Credentials stay in marketpulse-db-credentials (see
+# secrets.example.yaml) - never mixed in here.
+#
+# APP_ENV=production turns on fail-fast on placeholder secrets and the
+# hardened session/proxy settings in webapp/app_security.py.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: marketpulse-config
   namespace: marketpulse
 data:
+  APP_ENV: production
   WATCHLIST_PATH: config/watchlist.yaml
   NEWS_PER_TICKER_LIMIT: "15"
-  REQUEST_THROTTLE_SECONDS: "1.0"
+  NEWS_MAX_WORKERS: "8"
+  PRICE_MAX_WORKERS: "8"
+  OUTBOUND_MIN_INTERVAL_SECONDS: "0.25"
   FINBERT_MODEL_NAME: ProsusAI/finbert
   DB_HOST: postgres.marketpulse.svc.cluster.local
   DB_PORT: "5432"

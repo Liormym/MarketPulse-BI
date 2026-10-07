@@ -10,7 +10,7 @@
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-D71F00)](https://www.sqlalchemy.org/)
 [![FinBERT](https://img.shields.io/badge/NLP-FinBERT-FFCA28)](https://huggingface.co/ProsusAI/finbert)
 [![Chart.js](https://img.shields.io/badge/Chart.js-4.x-FF6384?logo=chart.js&logoColor=white)](https://www.chartjs.org/)
-[![Tests](https://img.shields.io/badge/tests-74%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-140%20passing-brightgreen)](#testing)
 [![Data Scale](https://img.shields.io/badge/rows-4.5M%2B-blueviolet)](#data-engineering-at-scale)
 
 ---
@@ -147,6 +147,12 @@ A lightweight `scipy.signal.find_peaks`-based module scans recent price action f
 
 These render as a dashed "Technical Observation" badge — a nudge to look closer in a real charting tool, **never a scoring input**. This separation is deliberate and enforced by tests: the Investment Score is verified byte-for-byte identical whether or not a pattern hint fires.
 
+### 📈 Momentum & Fundamentals Snapshot
+
+The stock deep-dive also shows **RSI (14-day, Wilder)** in the Technical & Risk panel — green "Oversold" below 30, red "Overbought" above 70 — and a **Fundamentals** panel with trailing P/E, market cap and beta. RSI is computed nightly with the other technicals from price history already in the database; the three fundamentals come from the same `yfinance` `Ticker.info` call already used for short interest and are cached for 24 hours (`n/a` means Yahoo has no value, e.g. no P/E for a loss-making company; `—` means nothing has been fetched yet). **None of these feed the Investment Score** — like the pattern hints, they are context for the reader, not a scoring input.
+
+The price chart opens with **only the price line** visible; SMA 20/50/150/200 and Sentiment stay in the legend (struck through) and toggle on with a click. Your choices persist while you switch timeframes or tickers.
+
 ---
 
 ## Tech Stack
@@ -162,7 +168,7 @@ These render as a dashed "Technical Observation" badge — a nudge to look close
 | Scientific Computing | `scipy`, `pandas`, `numpy` |
 | Frontend | Vanilla JS + Chart.js (no build step) |
 | Testing | `pytest` |
-| Containerization *(written, not yet deployed)* | Docker, Kubernetes |
+| Containerization *(images build in CI; not yet deployed)* | Docker (multi-stage, non-root), Kubernetes |
 
 ---
 
@@ -181,7 +187,7 @@ cd MarketPulse-BI
 
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # runtime deps + pytest; the images use requirements.txt only
 
 cp .env.example .env   # edit if your local Postgres credentials differ
 ```
@@ -248,6 +254,10 @@ It stops at the first failing step rather than pressing on with partial data:
 PYTHONPATH=src python scripts/run_daily_update.py
 ```
 
+### Score history
+
+Step 5 also appends every ticker's score to `FactInvestmentScoreHistory` (one row per asset per price bar, with the point breakdown, flags, the bar's close, and whether sentiment was available). `FactInvestmentScore` stays the single "latest score" cache the dashboard reads; the history table is what lets you ask whether high scores actually preceded gains, measured on real scores instead of ones reconstructed afterwards. Re-running on the same bar rewrites that row rather than duplicating it. History starts on the first run after migration `006` is applied, so a meaningful forward test needs a few months to accumulate.
+
 ### Running it automatically
 
 `scripts/scheduler.py` is a small `schedule`-based daemon that triggers the update above at **23:10** every US market weekday (30 minutes after the market close CronJob window used elsewhere in this repo). Each firing runs the orchestrator as a subprocess, so a failed pipeline run can't crash the daemon itself — it just logs the failure and waits for the next weekday.
@@ -264,7 +274,7 @@ PYTHONPATH=src python scripts/scheduler.py
 PYTHONPATH=src nohup python scripts/scheduler.py > scheduler.log 2>&1 &
 ```
 
-**For a production deployment, prefer `cron` (or the `k8s/pipeline-cronjob.yaml` CronJob already in this repo) over a long-lived Python daemon** — a scheduler process is one more thing that can silently die on a dev machine. The equivalent crontab entry:
+**For a production deployment, prefer `cron` (or the `k8s/eod-update-cronjob.yaml` CronJob already in this repo) over a long-lived Python daemon** — a scheduler process is one more thing that can silently die on a dev machine. The equivalent crontab entry:
 
 ```cron
 10 23 * * 1-5 cd /path/to/MarketPulseAI && PYTHONPATH=src /path/to/.venv/bin/python scripts/run_daily_update.py >> /var/log/marketpulse-eod.log 2>&1
@@ -277,10 +287,26 @@ PYTHONPATH=src nohup python scripts/scheduler.py > scheduler.log 2>&1 &
 ## Testing
 
 ```bash
-PYTHONPATH=src pytest
+PYTHONPATH=src pytest                          # everything, against your local dev database
+PYTHONPATH=src pytest -m "not populated_db"    # what CI runs: no backfilled market data needed
 ```
 
-74 tests covering the scoring engine (every rule in isolation, plus fuzz-tested bounds), the sentiment pipeline, technical indicator math, pattern detection heuristics, the rate limiter, and idempotent-upsert integration tests against a real local Postgres instance.
+140 tests covering the scoring engine (every rule in isolation, plus fuzz-tested bounds), the sentiment pipeline, technical indicator math (SMA/ATR/RSI), pattern detection heuristics, the rate limiter and its shared outbound limiter, production-config fail-fast, the EOD orchestrator's stop-on-failure behaviour, and idempotent-upsert integration tests against a real local Postgres instance. Five tests are marked `populated_db`: they need real backfilled prices and live Yahoo access, so CI (which only has a freshly migrated, seeded database) deselects them.
+
+## Container Images & CI
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+1. **test** — migrates and seeds a Postgres 16 service container, then runs `pytest -m "not populated_db"`.
+2. **images** — builds `docker/webapp.Dockerfile` and `docker/pipeline.Dockerfile` for `linux/amd64`, smoke-tests each (runs as UID 10001, CPU-only torch, FinBERT loads with `--network none`, the webapp boots in production mode and answers `/health`), and on pushes pushes them to GHCR as `ghcr.io/<owner>/marketpulse-{webapp,pipeline}:sha-<short>-amd64` (plus `main-amd64` on the default branch).
+
+Both images are multi-stage, pin the Python base image by digest, install CPU-only PyTorch (no CUDA libraries), and bake FinBERT into `HF_HOME=/opt/hf-cache` with network model lookups disabled at runtime. To build locally on Apple silicon for the cluster's architecture:
+
+```bash
+docker build --platform linux/amd64 -f docker/webapp.Dockerfile -t marketpulse-webapp .
+```
+
+When bumping the Python base image, change the tag **and** digest together in both Dockerfiles — CI fails if they disagree.
 
 ---
 
@@ -327,23 +353,20 @@ flowchart LR
             DEP["Deployment<br/>marketpulse-webapp<br/>2+ replicas"]
         end
 
-        subgraph Scheduled["Scheduled — CronJobs"]
-            CJ1["CronJob<br/>marketpulse-pipeline<br/>21:30 UTC weekdays"]
-            CJ2["CronJob<br/>marketpulse-derived-data<br/>22:00 UTC weekdays"]
+        subgraph Scheduled["Scheduled — CronJob"]
+            CJ["CronJob<br/>marketpulse-eod-update<br/>17:30 ET weekdays"]
         end
 
         SS[("StatefulSet<br/>postgres + PVC")]
         SVC["Service<br/>ClusterIP :80"]
 
         CM -.-> DEP
-        CM -.-> CJ1
-        CM -.-> CJ2
+        CM -.-> CJ
         SEC -.-> DEP
-        SEC -.-> CJ1
+        SEC -.-> CJ
         DEP --> SVC
         DEP --> SS
-        CJ1 --> SS
-        CJ2 --> SS
+        CJ --> SS
     end
 
     ING["Ingress / LoadBalancer"] --> SVC
@@ -357,19 +380,18 @@ The rate limiter's state lives in a **signed session cookie on the client**, not
 - **`/health`** — liveness. Never touches Postgres, so a slow/unreachable database doesn't trigger a restart-loop of otherwise-healthy pods.
 - **`/health/ready`** — readiness. Runs a trivial query, so a pod that *can't* reach Postgres stops receiving traffic without being killed.
 
-### The ETL pipeline and derived-data jobs map to `CronJobs`
+### The end-of-day update maps to a single `CronJob`
 
 | Workload | Kubernetes Kind | Schedule | Why |
 |---|---|---|---|
-| `marketpulse.pipeline` (prices, news, sentiment) | `CronJob` → `Job` → `Pod` | `30 21 * * 1-5` (after US market close) | Recurring, idempotent, naturally batch |
-| Derived data (technicals, sector flow, macro) | `CronJob` | `0 22 * * 1-5` (30 min after the pipeline) | Depends on that day's fresh prices/sentiment — scheduled after it, never racing it |
+| EOD update (`scripts/run_daily_update.py`: macro → prices/news/sentiment → technicals → sector flow → scores) | `CronJob` → `Job` → `Pod` | `30 17 * * 1-5` in `America/New_York` (90 min after the close) | One dependency-ordered run that stops at the first failed step, so no step ever computes on stale upstream data |
 | `period=max` historical backfill, S&P 500 constituent refresh | one-shot `Job` (`kubectl create job --from=cronjob/...`) | On-demand | These are onboarding/rebalancing operations, not a recurring schedule — modeled honestly as one-time Jobs rather than forced into a CronJob that would mostly no-op |
 
 Every write path (`ON CONFLICT` upserts throughout) is safe to re-run, which is precisely what makes the `CronJob → Job → Pod` model viable in the first place — a missed or doubled run on a flaky node is a non-event.
 
 ### Configuration: `ConfigMaps` and `Secrets`, kept strictly separate
 
-[`k8s/configmap.yaml`](k8s/configmap.yaml) holds everything safe to read in plaintext (watchlist path, request throttling, the FinBERT model id, DB host/port). [`k8s/secrets.example.yaml`](k8s/secrets.example.yaml) holds exactly two things: DB credentials and the Flask session-signing key — nothing else ever lives there. Every workload composes both via `envFrom`, so adding a new non-secret setting never means editing three YAML files.
+[`k8s/configmap.yaml`](k8s/configmap.yaml) holds everything safe to read in plaintext (watchlist path, outbound request rate and worker counts, the FinBERT model id, DB host/port, `APP_ENV`). [`k8s/secrets.example.yaml`](k8s/secrets.example.yaml) holds exactly two things: DB credentials and the Flask session-signing key — nothing else ever lives there. Every workload composes both via `envFrom`, so adding a new non-secret setting never means editing three YAML files. With `APP_ENV=production` the webapp and the EOD job refuse to start while any secret is still a placeholder.
 
 ### Built for observability
 
@@ -384,8 +406,7 @@ kubectl apply -f k8s/00-namespace.yaml
 kubectl apply -f k8s/configmap.yaml
 kubectl apply -f k8s/secrets.yaml            # copy from secrets.example.yaml first, never commit the real one
 kubectl apply -f k8s/postgres-statefulset.yaml
-kubectl apply -f k8s/pipeline-cronjob.yaml
-kubectl apply -f k8s/derived-data-cronjob.yaml
+kubectl apply -f k8s/eod-update-cronjob.yaml
 kubectl apply -f k8s/webapp-deployment.yaml
 ```
 

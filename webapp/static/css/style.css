@@ -757,6 +757,25 @@ html, body {
 .alert-badge.warn { background: var(--warn-soft); color: var(--warn); }
 .alert-badge.ok { background: var(--pos-soft); color: var(--pos); }
 
+/* RSI(14) zone badge next to the value: oversold = green, overbought = red */
+.rsi-badge {
+  display: none;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.rsi-badge.oversold { display: inline-block; background: var(--pos-soft); color: var(--pos); }
+.rsi-badge.overbought { display: inline-block; background: var(--neg-soft); color: var(--neg); }
+.rsi-badge.neutral { display: inline-block; background: rgba(136, 146, 163, 0.12); color: var(--text-muted); }
+
+.rsi-value.oversold { color: var(--pos); }
+.rsi-value.overbought { color: var(--neg); }
+
+.metric-footnote { margin-top: 8px; font-size: 11px; color: var(--text-dim); }
+
 .empty-state {
   color: var(--text-muted);
   font-size: 13px;

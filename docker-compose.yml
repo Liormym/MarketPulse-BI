@@ -36,10 +36,13 @@ services:
       DB_USER: ${DB_USER:-marketpulse}
       DB_PASSWORD: ${DB_PASSWORD:-changeme}
     volumes:
+      # The image runs as non-root (UID 10001). On Docker Desktop this bind
+      # mount just works; on a Linux host, make ./data/raw writable by that UID.
       - ./data/raw:/app/data/raw
-    # One-shot run by default (mirrors the CronJob->Job->Pod model). Override
-    # the command to `apply_migrations.py` / `seed_dimensions.py` for setup.
-    command: ["python", "-m", "marketpulse.pipeline"]
+    # One-shot run of the full EOD orchestrator, same entry point as the
+    # CronJob. Override the command to `apply_migrations.py` / `seed_dimensions.py`
+    # for setup.
+    command: ["python", "scripts/run_daily_update.py"]
 
   webapp:
     build:

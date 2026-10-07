@@ -7,6 +7,18 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#090b10">
+  <link rel="icon" href="{{ url_for('static', filename='icons/favicon-32.png') }}" type="image/png">
+
+  <!-- iOS ignores manifest.json for home-screen install; it needs these explicitly. -->
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MarketPulse">
+
+  <script src="{{ url_for('static', filename='js/register-sw.js') }}" defer></script>
 </head>
 <body>
   <div class="app">

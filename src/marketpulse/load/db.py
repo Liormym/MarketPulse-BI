@@ -8,4 +8,4 @@ from ..config import settings
 
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
-    return create_engine(settings.database_url, future=True)
+    return create_engine(settings.database_url, future=True, pool_pre_ping=True)

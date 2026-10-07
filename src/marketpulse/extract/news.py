@@ -3,12 +3,15 @@
 Primary source: Yahoo Finance's per-ticker RSS feed. Falls back to a Google News
 RSS search by ticker symbol if Yahoo returns nothing, since RSS feeds can be
 flaky or thin for smaller tickers.
+
+Tickers are fetched concurrently (bounded by settings.news_max_workers), and
+every feed request goes through the shared outbound rate limiter.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
-import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -18,6 +21,7 @@ import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from ..config import settings
+from .ratelimit import OUTBOUND_LIMITER
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +61,7 @@ def _parse_published(entry) -> datetime:
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
 def _parse_feed(url: str):
+    OUTBOUND_LIMITER.wait()
     try:
         resp = requests.get(
             url,
@@ -106,12 +111,17 @@ def fetch_news_for_ticker(ticker: str, company_name: str, limit: int) -> list[Ne
     return records[:limit]
 
 
+def _fetch_ticker_news(asset: dict, limit: int) -> list[NewsRecord]:
+    try:
+        return fetch_news_for_ticker(asset["ticker"], asset["company_name"], limit)
+    except Exception:
+        log.exception("news fetch crashed for %s; skipping this ticker", asset["ticker"])
+        return []
+
+
 def fetch_news(assets: list[dict], limit_per_ticker: int | None = None) -> list[NewsRecord]:
     """assets: list of {'ticker': ..., 'company_name': ...} from DimAsset."""
     limit = limit_per_ticker or settings.news_per_ticker_limit
-    all_records: list[NewsRecord] = []
-    for asset in assets:
-        recs = fetch_news_for_ticker(asset["ticker"], asset["company_name"], limit)
-        all_records.extend(recs)
-        time.sleep(settings.request_throttle_seconds)
-    return all_records
+    with ThreadPoolExecutor(max_workers=settings.news_max_workers) as pool:
+        per_ticker = list(pool.map(lambda asset: _fetch_ticker_news(asset, limit), assets))
+    return [record for records in per_ticker for record in records]

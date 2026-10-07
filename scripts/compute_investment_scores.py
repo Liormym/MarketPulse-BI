@@ -26,6 +26,10 @@ it on a schedule at that same ~24h cadence (like the other CronJobs) and
 most tickers hit a warm cache; a fully cold run does mean ~550 yfinance
 calls once.
 
+Every run also appends each ticker's score to FactInvestmentScoreHistory, one
+row per price bar (see db/migrations/006), so score-vs-return questions can be
+answered from real history instead of reconstructed after the fact.
+
 Skips non-equity assets (Sector "Index"/"ETF") - the watchlist also tracks
 macro reference instruments (e.g. ^KS11/KOSPI, the sector SPDR ETFs used by
 sector_flow.py) alongside individual stocks. An index literally can't be
@@ -47,19 +51,23 @@ from sqlalchemy import text  # noqa: E402
 
 import db as webapp_db  # noqa: E402
 from marketpulse.load.db import get_engine  # noqa: E402
+from marketpulse.load.upsert import upsert_investment_score_history  # noqa: E402
 from marketpulse.scoring import ScoreBreakdown, compute_investment_score  # noqa: E402
 
 NON_EQUITY_SECTORS = {"Index", "ETF"}
 
 
-def compute_score_for_ticker(ticker: str, sector_flows: dict | None = None) -> ScoreBreakdown | None:
+def compute_score_snapshot(ticker: str, sector_flows: dict | None = None) -> dict | None:
     """Computes the Investment Score for one ticker via the exact pipeline
-    the live route uses. `sector_flows` lets a batch run reuse one
-    get_sector_flows() query across every ticker instead of re-querying it
-    per ticker; omit it (e.g. from a single-ticker call) and it's fetched
-    fresh. Returns None if the ticker has no price history at all."""
+    the live route uses, and returns it together with what the history table
+    needs: the date of the last price bar it was computed on, that bar's
+    close, the short-interest input, and whether any news sentiment was
+    available. `sector_flows` lets a batch run reuse one get_sector_flows()
+    query across every ticker instead of re-querying it per ticker; omit it
+    (e.g. from a single-ticker call) and it's fetched fresh. Returns None if
+    the ticker has no price history at all."""
     data = webapp_db.get_price_sentiment_history(ticker)
-    if data is None:
+    if data is None or not data["dates"]:
         return None
 
     if sector_flows is None:
@@ -68,7 +76,19 @@ def compute_score_for_ticker(ticker: str, sector_flows: dict | None = None) -> S
 
     enrichment = webapp_db.enrich_stock(ticker)
 
-    return compute_investment_score(**webapp_db.build_score_kwargs(data, sector_flow, enrichment))
+    kwargs = webapp_db.build_score_kwargs(data, sector_flow, enrichment)
+    return {
+        "breakdown": compute_investment_score(**kwargs),
+        "date_key": int(data["dates"][-1].replace("-", "")),
+        "close_price": data["prices"][-1],
+        "short_percent_of_float": kwargs["short_percent_of_float"],
+        "has_sentiment": any(v is not None for v in kwargs["recent_sentiment"]),
+    }
+
+
+def compute_score_for_ticker(ticker: str, sector_flows: dict | None = None) -> ScoreBreakdown | None:
+    snapshot = compute_score_snapshot(ticker, sector_flows)
+    return snapshot["breakdown"] if snapshot else None
 
 
 def main() -> None:
@@ -81,6 +101,8 @@ def main() -> None:
     tickers = webapp_db.get_tickers()
     n_scored = 0
     n_skipped = 0
+    history_rows = []
+    computed_at = datetime.now(timezone.utc)
 
     with engine.begin() as conn:
         for t in tickers:
@@ -94,7 +116,8 @@ def main() -> None:
                 n_skipped += 1
                 continue
 
-            breakdown = compute_score_for_ticker(ticker, sector_flows=sector_flows)
+            snapshot = compute_score_snapshot(ticker, sector_flows=sector_flows)
+            breakdown = snapshot["breakdown"] if snapshot else None
             if breakdown is None or breakdown.score is None:
                 n_skipped += 1
                 continue
@@ -108,11 +131,30 @@ def main() -> None:
                         SET "Score" = EXCLUDED."Score", "ComputedAt" = EXCLUDED."ComputedAt"
                     """
                 ),
-                {"asset_key": asset_key, "score": breakdown.score, "computed_at": datetime.now(timezone.utc)},
+                {"asset_key": asset_key, "score": breakdown.score, "computed_at": computed_at},
+            )
+            history_rows.append(
+                {
+                    "asset_key": asset_key,
+                    "date_key": snapshot["date_key"],
+                    "score": breakdown.score,
+                    "sentiment_points": breakdown.sentiment_points,
+                    "technical_points": breakdown.technical_points,
+                    "positioning_points": breakdown.positioning_points,
+                    "risk_modifier_points": breakdown.risk_modifier_points,
+                    "close_price": snapshot["close_price"],
+                    "short_percent_of_float": snapshot["short_percent_of_float"],
+                    "has_sentiment": snapshot["has_sentiment"],
+                    "flags": breakdown.flags,
+                    "computed_at": computed_at,
+                }
             )
             n_scored += 1
 
-    print(f"Scored {n_scored} tickers, skipped {n_skipped} (insufficient price history)")
+        n_history = upsert_investment_score_history(conn, history_rows)
+
+    print(f"Scored {n_scored} tickers, skipped {n_skipped} (insufficient price history), "
+          f"{n_history} history rows written")
 
 
 if __name__ == "__main__":

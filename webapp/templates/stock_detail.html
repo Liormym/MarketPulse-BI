@@ -7,6 +7,18 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#090b10">
+  <link rel="icon" href="{{ url_for('static', filename='icons/favicon-32.png') }}" type="image/png">
+
+  <!-- iOS ignores manifest.json for home-screen install; it needs these explicitly. -->
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MarketPulse">
+
+  <script src="{{ url_for('static', filename='js/register-sw.js') }}" defer></script>
 </head>
 <body>
   <div class="app">
@@ -97,8 +109,22 @@
             <div class="metric-row"><span class="metric-label">SMA 150</span><span class="metric-value" id="metric-sma150">—</span></div>
             <div class="metric-row"><span class="metric-label">SMA 200</span><span class="metric-value" id="metric-sma200">—</span></div>
             <div class="metric-row"><span class="metric-label">ATR (14)</span><span class="metric-value" id="metric-atr">—</span></div>
+            <div class="metric-row" title="Relative Strength Index (14-day, Wilder). Below 30 reads as oversold, above 70 as overbought. Informational only - not part of the Investment Score.">
+              <span class="metric-label">RSI (14)</span>
+              <span class="metric-value"><span id="metric-rsi">—</span><span id="rsi-badge" class="rsi-badge"></span></span>
+            </div>
             <div class="metric-row"><span class="metric-label">Avg. Volume (20d)</span><span class="metric-value" id="metric-avgvol">—</span></div>
             <div class="metric-row"><span class="metric-label">Latest Gap</span><span class="metric-value" id="metric-gap">—</span></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header"><h2>Fundamentals</h2></div>
+          <div id="fundamentals-panel">
+            <div class="metric-row"><span class="metric-label">Trailing P/E</span><span class="metric-value" id="metric-pe">—</span></div>
+            <div class="metric-row"><span class="metric-label">Market Cap</span><span class="metric-value" id="metric-mcap">—</span></div>
+            <div class="metric-row"><span class="metric-label">Beta</span><span class="metric-value" id="metric-beta">—</span></div>
+            <div class="metric-footnote" id="fundamentals-asof"></div>
           </div>
         </section>
 

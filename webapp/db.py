@@ -86,7 +86,7 @@ def get_price_sentiment_history(ticker: str) -> dict | None:
     )
     latest_technicals_query = text(
         """
-        SELECT "ATR14", "ATR90Avg", "ATR90Std", "AvgVolume20D"
+        SELECT "ATR14", "ATR90Avg", "ATR90Std", "AvgVolume20D", "RSI14"
         FROM "FactStockTechnicals"
         WHERE "AssetKey" = :asset_key
         ORDER BY "DateKey" DESC
@@ -136,6 +136,7 @@ def get_price_sentiment_history(ticker: str) -> dict | None:
         "atr_90d_avg": _round(latest_technicals["ATR90Avg"], 2) if latest_technicals else None,
         "atr_90d_std": _round(latest_technicals["ATR90Std"], 2) if latest_technicals else None,
         "avg_volume_20d": _round(latest_technicals["AvgVolume20D"], 0) if latest_technicals else None,
+        "rsi14": _round(latest_technicals["RSI14"], 1) if latest_technicals else None,
     }
 
 

@@ -1,4 +1,5 @@
-"""On-demand stock enrichment: short interest and insider transactions.
+"""On-demand stock enrichment: short interest, fundamentals (trailing P/E,
+market cap, beta) and insider transactions.
 
 Unlike price/technicals (precomputed in batch for all 560 tickers, since
 they're pure computation over already-backfilled data), these come straight
@@ -39,6 +40,16 @@ def _clean_int(value):
     return int(cleaned) if cleaned is not None else None
 
 
+def _finite_number(value):
+    """A real, finite number or None. yfinance sometimes hands back strings
+    like "Infinity" (e.g. a P/E on near-zero earnings) that float() accepts."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _classify_transaction_text(raw_text: str | None) -> str | None:
     t = (raw_text or "").strip().lower()
     if t.startswith("sale"):
@@ -55,12 +66,25 @@ def _is_key_officer(position: str | None) -> bool:
     return "chief" in p or "ceo" in p
 
 
-def _fetch_short_percent_of_float(ticker: str) -> float | None:
+def _fetch_info_snapshot(ticker: str) -> dict | None:
+    """Short interest + fundamentals from ONE Ticker.info call. Returns None if
+    the call itself failed (so the caller keeps whatever it already cached
+    rather than overwriting good values with blanks); a successful call for
+    something with no P/E (loss-making company, ETF, crypto) returns a dict
+    with None for that field."""
     try:
         info = yf.Ticker(ticker).info
     except Exception:
         return None
-    return _clean_float(info.get("shortPercentOfFloat"))
+
+    pe = _finite_number(info.get("trailingPE"))
+    market_cap = _finite_number(info.get("marketCap"))
+    return {
+        "short_percent_of_float": _finite_number(info.get("shortPercentOfFloat")),
+        "trailing_pe": pe if pe is not None and pe > 0 else None,
+        "market_cap": int(market_cap) if market_cap is not None and market_cap > 0 else None,
+        "beta": _finite_number(info.get("beta")),
+    }
 
 
 def _fetch_insider_transactions(ticker: str) -> list[dict]:
@@ -101,30 +125,69 @@ def _fetch_insider_transactions(ticker: str) -> list[dict]:
 
 
 def get_or_fetch_enrichment(conn, asset_key: int, ticker: str) -> dict:
-    """Returns {"short_percent_of_float": float|None, "insider_transactions": [...]},
-    refreshing from yfinance if the cached snapshot is missing or stale.
+    """Returns {"short_percent_of_float", "fundamentals", "has_recent_executive_sale",
+    "insider_transactions"}, refreshing short interest and fundamentals from
+    yfinance if the cached snapshot is missing, stale, or predates the
+    fundamentals columns.
     """
     cached = conn.execute(
-        text('SELECT "ShortPercentOfFloat", "FetchedAt" FROM "StockEnrichmentCache" WHERE "AssetKey" = :asset_key'),
+        text(
+            '''SELECT "ShortPercentOfFloat", "FetchedAt", "TrailingPE", "MarketCap", "Beta", "FundamentalsFetchedAt"
+               FROM "StockEnrichmentCache" WHERE "AssetKey" = :asset_key'''
+        ),
         {"asset_key": asset_key},
     ).first()
 
-    is_stale = cached is None or (datetime.now(timezone.utc) - cached[1]) > CACHE_TTL
-    if is_stale:
-        short_pct = _fetch_short_percent_of_float(ticker)
+    is_stale = (
+        cached is None
+        or cached[5] is None  # row written before the fundamentals columns existed
+        or (datetime.now(timezone.utc) - cached[1]) > CACHE_TTL
+    )
+    snapshot = _fetch_info_snapshot(ticker) if is_stale else None
+
+    if snapshot is not None:
         conn.execute(
             text(
                 """
-                INSERT INTO "StockEnrichmentCache" ("AssetKey", "ShortPercentOfFloat", "FetchedAt")
-                VALUES (:asset_key, :short_pct, now())
+                INSERT INTO "StockEnrichmentCache"
+                    ("AssetKey", "ShortPercentOfFloat", "TrailingPE", "MarketCap", "Beta", "FetchedAt", "FundamentalsFetchedAt")
+                VALUES (:asset_key, :short_pct, :pe, :market_cap, :beta, now(), now())
                 ON CONFLICT ("AssetKey") DO UPDATE
-                    SET "ShortPercentOfFloat" = EXCLUDED."ShortPercentOfFloat", "FetchedAt" = EXCLUDED."FetchedAt"
+                    SET "ShortPercentOfFloat" = EXCLUDED."ShortPercentOfFloat",
+                        "TrailingPE" = EXCLUDED."TrailingPE",
+                        "MarketCap" = EXCLUDED."MarketCap",
+                        "Beta" = EXCLUDED."Beta",
+                        "FetchedAt" = EXCLUDED."FetchedAt",
+                        "FundamentalsFetchedAt" = EXCLUDED."FundamentalsFetchedAt"
                 """
             ),
-            {"asset_key": asset_key, "short_pct": short_pct},
+            {
+                "asset_key": asset_key,
+                "short_pct": snapshot["short_percent_of_float"],
+                "pe": snapshot["trailing_pe"],
+                "market_cap": snapshot["market_cap"],
+                "beta": snapshot["beta"],
+            },
         )
-    else:
+        short_pct = snapshot["short_percent_of_float"]
+        fundamentals = {
+            "trailing_pe": snapshot["trailing_pe"],
+            "market_cap": snapshot["market_cap"],
+            "beta": snapshot["beta"],
+            "as_of": datetime.now(timezone.utc).isoformat(),
+        }
+    elif cached is not None:
+        # Fresh cache, or a refresh that failed: serve what we have.
         short_pct = cached[0]
+        fundamentals = {
+            "trailing_pe": cached[2],
+            "market_cap": cached[3],
+            "beta": cached[4],
+            "as_of": cached[5].isoformat() if cached[5] else None,
+        }
+    else:
+        short_pct = None
+        fundamentals = {"trailing_pe": None, "market_cap": None, "beta": None, "as_of": None}
 
     has_transactions = conn.execute(
         text('SELECT 1 FROM "InsiderTransactions" WHERE "AssetKey" = :asset_key LIMIT 1'),
@@ -181,6 +244,7 @@ def get_or_fetch_enrichment(conn, asset_key: int, ticker: str) -> dict:
 
     return {
         "short_percent_of_float": short_pct,
+        "fundamentals": fundamentals,
         "has_recent_executive_sale": has_recent_executive_sale,
         "insider_transactions": [
             {

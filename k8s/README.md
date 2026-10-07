@@ -23,8 +23,8 @@ DB_HOST=localhost python scripts/seed_dimensions.py
 docker build -t marketpulse-pipeline:latest -f docker/pipeline.Dockerfile .
 minikube image load marketpulse-pipeline:latest
 
-kubectl apply -f k8s/pipeline-cronjob.yaml
-kubectl create job --from=cronjob/marketpulse-pipeline marketpulse-pipeline-manual -n marketpulse  # trigger once, don't wait for the schedule
+kubectl apply -f k8s/eod-update-cronjob.yaml
+kubectl create job --from=cronjob/marketpulse-eod-update marketpulse-eod-manual -n marketpulse  # trigger once, don't wait for the schedule
 ```
 
 ## Files
@@ -32,4 +32,4 @@ kubectl create job --from=cronjob/marketpulse-pipeline marketpulse-pipeline-manu
 - `00-namespace.yaml` — the `marketpulse` namespace everything else lives in.
 - `secrets.example.yaml` — template for DB credentials as a k8s Secret (spec §11: no hardcoded credentials).
 - `postgres-statefulset.yaml` — Postgres StatefulSet + headless Service + PVC (2Gi, `ReadWriteOnce`).
-- `pipeline-cronjob.yaml` — the scheduled pipeline run, default weekdays 21:30 UTC, 15-minute deadline matching the spec's performance KPI.
+- `eod-update-cronjob.yaml` — the single scheduled end-of-day job (`scripts/run_daily_update.py`): weekdays 17:30 America/New_York, runs all five steps in order and stops on the first failure.
