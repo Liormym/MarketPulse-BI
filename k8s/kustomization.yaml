@@ -1,0 +1,20 @@
+# kubectl apply -k k8s/     (kubectl >= 1.27 has kustomize built in)
+# Cluster-scoped prerequisites (ESO, cert-manager, ingress-nginx) are NOT
+# managed here - see README. Image tags are set in the Deployment/CronJob/Job
+# manifests; bump them all with:  sed -i 's/sha-OLD-amd64/sha-NEW-amd64/' k8s/*.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: marketpulse
+resources:
+  - 00-namespace.yaml
+  - serviceaccounts.yaml
+  - configmap.yaml
+  - externalsecrets.yaml
+  - networkpolicies.yaml
+  - postgres-statefulset.yaml
+  - migrate-job.yaml
+  - webapp-deployment.yaml
+  - eod-update-cronjob.yaml
+  - backup-cronjob.yaml
+  - clusterissuer.yaml
+  - ingress.yaml

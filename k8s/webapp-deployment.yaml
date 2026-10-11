@@ -1,8 +1,7 @@
-# The Flask app is fully stateless - the rate limiter lives in a signed
-# session cookie (client-side), not server memory, and every request reads/
-# writes only Postgres. That statelessness is what makes horizontal scaling
-# here trivial: replicas just need `replicas: N`, no sticky sessions, no
-# shared cache, no leader election.
+# The Flask app is stateless - the refresh rate limiter lives in a signed
+# session cookie and every request reads/writes only Postgres - so replicas
+# need no sticky sessions or shared cache. (The cookie limiter is client-side
+# and bypassable; the real per-IP limit is the refresh Ingress, ingress.yaml.)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,6 +9,9 @@ metadata:
   namespace: marketpulse
 spec:
   replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
   selector:
     matchLabels:
       app: marketpulse-webapp
@@ -17,46 +19,69 @@ spec:
     metadata:
       labels:
         app: marketpulse-webapp
+        marketpulse/db-client: "true"
+        marketpulse/egress-internet: "true" # live refresh calls Yahoo Finance
     spec:
+      serviceAccountName: marketpulse-webapp
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: webapp
-          image: marketpulse-webapp:latest # build locally with docker/webapp.Dockerfile
+          image: ghcr.io/liormym/marketpulse-webapp:sha-ae66c0f-amd64
+          imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 5050
+            - {name: http, containerPort: 5050}
           envFrom:
-            - secretRef:
-                name: marketpulse-db-credentials
-            - configMapRef:
-                name: marketpulse-config
+            - secretRef: {name: marketpulse-db-credentials}
+            - configMapRef: {name: marketpulse-config}
           env:
             - name: FLASK_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: marketpulse-webapp-secret
-                  key: FLASK_SECRET_KEY
+              valueFrom: {secretKeyRef: {name: marketpulse-webapp-secret, key: FLASK_SECRET_KEY}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
           resources:
-            requests:
-              cpu: "100m"
-              memory: "512Mi" # FinBERT is loaded in-process for the live-refresh path
-            limits:
-              cpu: "500m"
-              memory: "1Gi"
-          # Liveness never touches the DB (webapp/app.py's /health) - a slow
-          # Postgres should not trigger a restart-loop of otherwise-healthy pods.
+            requests: {cpu: 250m, memory: 768Mi}
+            limits: {cpu: "1", memory: 2Gi} # 2 gunicorn workers, each may load FinBERT for live refresh
+          # Probe budget vs. gunicorn: 2 sync workers, 60 s request timeout. Two
+          # concurrent live refreshes can occupy both workers for up to 60 s,
+          # during which probes time out. Liveness therefore tolerates
+          # 6 x 20 s = 2 min of silence before restarting; readiness drops the
+          # pod from the Service after 3 misses (30 s) without restarting it.
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 36 # up to 3 minutes for a cold start
+          # Liveness never touches the DB (/health) - a slow Postgres must not
+          # restart-loop healthy pods.
           livenessProbe:
-            httpGet:
-              path: /health
-              port: 5050
-            initialDelaySeconds: 10
-            periodSeconds: 15
-          # Readiness DOES check the DB (/health/ready) - a pod that can't
-          # reach Postgres should stop receiving traffic without restarting.
+            httpGet: {path: /health, port: http}
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          # Readiness DOES check the DB (/health/ready).
           readinessProbe:
-            httpGet:
-              path: /health/ready
-              port: 5050
-            initialDelaySeconds: 5
+            httpGet: {path: /health/ready, port: http}
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      terminationGracePeriodSeconds: 70 # > gunicorn's 60 s timeout, so in-flight refreshes finish
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: marketpulse-webapp
+  namespace: marketpulse
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: marketpulse-webapp
 ---
 apiVersion: v1
 kind: Service
@@ -64,9 +89,8 @@ metadata:
   name: marketpulse-webapp
   namespace: marketpulse
 spec:
-  type: ClusterIP # front with an Ingress/LoadBalancer for external access
+  type: ClusterIP # exposed through ingress.yaml
   selector:
     app: marketpulse-webapp
   ports:
-    - port: 80
-      targetPort: 5050
+    - {name: http, port: 80, targetPort: http}

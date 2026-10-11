@@ -1,5 +1,9 @@
-# Spec §4: PostgreSQL as a StatefulSet bound to a PersistentVolume, so a pod
-# crash never loses data (initiation doc risk #2's mitigation).
+# PostgreSQL as a single-replica StatefulSet on a 15Gi PersistentVolume.
+# Storage is k3s's built-in "local-path" class: the data lives in a directory
+# on the VM's disk. Consequences (see README): it survives pod restarts and
+# reschedules, it does NOT survive loss of the VM - the nightly pg_dump to S3
+# (backup-cronjob.yaml) is the disaster-recovery copy. local-path does not
+# enforce the 15Gi size or support expansion; watch the node's disk instead.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -16,47 +20,68 @@ spec:
       labels:
         app: postgres
     spec:
+      serviceAccountName: postgres
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60 # let Postgres checkpoint on shutdown
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999 # the image's "postgres" user
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: postgres
-          image: postgres:16
+          image: postgres:16.15-bookworm@sha256:0ea6700a3b4f0ae6ce746519073558aed4d88a79d8d07622a9a644946c7319c4
+          imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 5432
-          envFrom:
-            - secretRef:
-                name: marketpulse-db-credentials
+            - {name: postgres, containerPort: 5432}
           env:
             - name: POSTGRES_DB
-              valueFrom:
-                secretKeyRef:
-                  name: marketpulse-db-credentials
-                  key: DB_NAME
+              valueFrom: {secretKeyRef: {name: marketpulse-db-credentials, key: DB_NAME}}
             - name: POSTGRES_USER
-              valueFrom:
-                secretKeyRef:
-                  name: marketpulse-db-credentials
-                  key: DB_USER
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: marketpulse-db-credentials
-                  key: DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: marketpulse-db-credentials, key: DB_USER}}
+            - name: POSTGRES_PASSWORD # only read when the data directory is first initialised
+              valueFrom: {secretKeyRef: {name: marketpulse-db-credentials, key: DB_PASSWORD}}
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
           volumeMounts:
-            - name: postgres-storage
-              mountPath: /var/lib/postgresql/data
-              subPath: pgdata # avoids the "lost+found" non-empty-dir issue on some CSI drivers
-          readinessProbe:
-            exec:
-              command: ["pg_isready", "-U", "$(POSTGRES_USER)"]
-            initialDelaySeconds: 5
+            - {name: postgres-storage, mountPath: /var/lib/postgresql/data}
+            - {name: run, mountPath: /var/run/postgresql} # unix socket + pid file
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          # Slow first start (initdb, or crash recovery after an unclean stop)
+          # must not be killed by liveness: it gets up to 5 minutes here.
+          startupProbe:
+            exec: {command: ["sh", "-c", "pg_isready -h 127.0.0.1 -p 5432 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]}
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            exec: {command: ["sh", "-c", "pg_isready -h 127.0.0.1 -p 5432 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]}
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            exec: {command: ["sh", "-c", "pg_isready -h 127.0.0.1 -p 5432 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: run
+          emptyDir: {}
   volumeClaimTemplates:
     - metadata:
         name: postgres-storage
       spec:
         accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
         resources:
           requests:
-            storage: 2Gi
+            storage: 15Gi
 ---
 apiVersion: v1
 kind: Service
@@ -68,5 +93,4 @@ spec:
   selector:
     app: postgres
   ports:
-    - port: 5432
-      targetPort: 5432
+    - {name: postgres, port: 5432, targetPort: postgres}

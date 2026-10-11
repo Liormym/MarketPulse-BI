@@ -1,0 +1,41 @@
+# Applies db/migrations/*.sql and seeds DimDate/DimAsset. Idempotent: applied
+# migrations are skipped, seeds are upserts. A Job's pod template is immutable,
+# so after bumping the image tag delete it first (README, "Deploy"):
+#   kubectl -n marketpulse delete job marketpulse-migrate --ignore-not-found
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: marketpulse-migrate
+  namespace: marketpulse
+spec:
+  backoffLimit: 6 # Postgres may still be starting on the very first apply
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: marketpulse-migrate
+        marketpulse/db-client: "true"
+    spec:
+      serviceAccountName: marketpulse-jobs
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: migrate
+          image: ghcr.io/liormym/marketpulse-pipeline:sha-ae66c0f-amd64
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-ec", "python scripts/apply_migrations.py && python scripts/seed_dimensions.py"]
+          envFrom:
+            - secretRef: {name: marketpulse-db-credentials}
+            - configMapRef: {name: marketpulse-config}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 512Mi}

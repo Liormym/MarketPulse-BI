@@ -1,0 +1,93 @@
+# Nightly logical backup: pg_dump (custom format) -> S3-compatible bucket.
+# Two containers sharing an emptyDir, each with only the tool it needs:
+#   init  "dump"   postgres:16 image  - pg_dump over the cluster network
+#   main  "upload" aws-cli image      - uploads the dump, never sees the DB password
+# Retention is NOT handled here: set a lifecycle rule on the bucket (e.g.
+# expire after 30 days). Restore steps: README, "Backup and restore".
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: marketpulse-pg-backup
+  namespace: marketpulse
+spec:
+  schedule: "15 6 * * *" # 06:15 UTC - after the 17:30 ET EOD run, before the next one
+  timeZone: UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 604800
+      template:
+        metadata:
+          labels:
+            app: marketpulse-pg-backup
+            marketpulse/db-client: "true"
+            marketpulse/egress-internet: "true"
+        spec:
+          serviceAccountName: marketpulse-jobs
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
+            seccompProfile: {type: RuntimeDefault}
+          initContainers:
+            - name: dump
+              image: postgres:16.15-bookworm@sha256:0ea6700a3b4f0ae6ce746519073558aed4d88a79d8d07622a9a644946c7319c4
+              imagePullPolicy: IfNotPresent
+              command: ["sh", "-ec"]
+              args:
+                - |
+                  f=/backup/marketpulse-$(date -u +%Y%m%dT%H%M%SZ).dump
+                  pg_dump -h postgres.marketpulse.svc.cluster.local -U "$DB_USER" -d "$DB_NAME" -Fc --no-owner -f "$f"
+                  test -s "$f"
+                  echo "dumped $f ($(wc -c < "$f") bytes)"
+              env:
+                - name: DB_NAME
+                  valueFrom: {secretKeyRef: {name: marketpulse-db-credentials, key: DB_NAME}}
+                - name: DB_USER
+                  valueFrom: {secretKeyRef: {name: marketpulse-db-credentials, key: DB_USER}}
+                - name: PGPASSWORD
+                  valueFrom: {secretKeyRef: {name: marketpulse-db-credentials, key: DB_PASSWORD}}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: {drop: [ALL]}
+              resources:
+                requests: {cpu: 100m, memory: 128Mi}
+                limits: {cpu: "1", memory: 512Mi}
+              volumeMounts:
+                - {name: backup, mountPath: /backup}
+          containers:
+            - name: upload
+              image: amazon/aws-cli:2.37.10@sha256:3dacc5db57c923c4223e949795f538ecf1f2212b2b7d5a028b47b97f91564c0d
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  aws s3 cp /backup/ "s3://${S3_BUCKET}/postgres/" --recursive ${S3_ENDPOINT:+--endpoint-url "$S3_ENDPOINT"}
+              envFrom:
+                - secretRef: {name: marketpulse-backup-credentials}
+              env:
+                - {name: HOME, value: /tmp}
+                - {name: AWS_DEFAULT_REGION, value: us-east-1} # TODO: bucket region (any value works for most non-AWS endpoints)
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: {drop: [ALL]}
+                readOnlyRootFilesystem: true
+              resources:
+                requests: {cpu: 50m, memory: 128Mi}
+                limits: {cpu: 500m, memory: 256Mi}
+              volumeMounts:
+                - {name: backup, mountPath: /backup, readOnly: true}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: backup
+              emptyDir: {sizeLimit: 5Gi}
+            - name: tmp
+              emptyDir: {sizeLimit: 128Mi}

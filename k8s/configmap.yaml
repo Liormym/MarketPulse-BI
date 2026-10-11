@@ -1,6 +1,6 @@
 # Non-secret runtime config, shared by the EOD CronJob and the webapp
 # Deployment. Credentials stay in marketpulse-db-credentials (see
-# secrets.example.yaml) - never mixed in here.
+# externalsecrets.yaml) - never mixed in here.
 #
 # APP_ENV=production turns on fail-fast on placeholder secrets and the
 # hardened session/proxy settings in webapp/app_security.py.

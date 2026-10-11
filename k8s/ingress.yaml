@@ -1,0 +1,69 @@
+# Two Ingresses for one host. ingress-nginx rate-limit annotations apply to a
+# whole Ingress, so the refresh route needs its own: it is the only endpoint
+# that triggers outbound Yahoo/FinBERT work, and it is public.
+#
+# TODO before applying: replace marketpulse.example.com (3 places) with your host.
+#
+# Requires k3s started with --disable=traefik and ingress-nginx installed
+# (README, "Cluster prerequisites"). For the limit to see real client IPs the
+# controller Service needs externalTrafficPolicy: Local.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: marketpulse
+  namespace: marketpulse
+  annotations:
+    # Only THIS Ingress requests the certificate; the refresh Ingress reuses
+    # the same Secret. Switch to letsencrypt-prod once staging issues cleanly.
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [marketpulse.example.com]
+      secretName: marketpulse-tls
+  rules:
+    - host: marketpulse.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: marketpulse-webapp, port: {name: http}}
+---
+# POST /api/stock/<ticker>/refresh - limited per client IP.
+#   limit-rpm 6              sustained 6 requests/min/IP
+#   limit-burst-multiplier 2 short bursts up to 12
+#   limit-connections 2      at most 2 concurrent refreshes per IP
+# The 429 status needs one cluster-wide setting in the ingress-nginx ConfigMap:
+# limit-req-status-code: "429" (README); the default is 503.
+# use-regex makes ingress-nginx treat the paths of THIS HOST as regexes; the
+# main Ingress's "/" prefix keeps working (the longer regex wins for refresh).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: marketpulse-refresh
+  namespace: marketpulse
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/limit-rpm: "6"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "2"
+    nginx.ingress.kubernetes.io/limit-connections: "2"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: 1k
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [marketpulse.example.com]
+      secretName: marketpulse-tls
+  rules:
+    - host: marketpulse.example.com
+      http:
+        paths:
+          - path: /api/stock/[^/]+/refresh
+            pathType: ImplementationSpecific
+            backend:
+              service: {name: marketpulse-webapp, port: {name: http}}

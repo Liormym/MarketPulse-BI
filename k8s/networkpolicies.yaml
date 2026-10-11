@@ -1,0 +1,107 @@
+# Default deny in both directions, then explicit allows. Enforced by k3s's
+# embedded network-policy controller (kube-router) - do not start k3s with
+# --disable-network-policy.
+#
+# Pod labels used as the policy "roles":
+#   app=postgres                      the database
+#   marketpulse/db-client=true        may reach Postgres:5432 (webapp, EOD, migrate, backup)
+#   marketpulse/egress-internet=true  may reach the public internet on 443 (Yahoo, news, S3)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-all, namespace: marketpulse}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-dns-egress, namespace: marketpulse}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+# Postgres: 5432 from db-client pods only. Nothing else in or out.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: postgres-allow-db-clients, namespace: marketpulse}
+spec:
+  podSelector:
+    matchLabels: {app: postgres}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {marketpulse/db-client: "true"}
+      ports:
+        - {protocol: TCP, port: 5432}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: db-clients-egress-postgres, namespace: marketpulse}
+spec:
+  podSelector:
+    matchLabels: {marketpulse/db-client: "true"}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app: postgres}
+      ports:
+        - {protocol: TCP, port: 5432}
+---
+# Public internet on 443 only, never RFC1918 / CGNAT / link-local (this blocks
+# the cloud metadata endpoint 169.254.169.254 and every in-cluster address).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: egress-internet-https, namespace: marketpulse}
+spec:
+  podSelector:
+    matchLabels: {marketpulse/egress-internet: "true"}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16]
+      ports:
+        - {protocol: TCP, port: 443}
+---
+# Webapp: ingress-nginx -> pod port 5050.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: webapp-allow-ingress-nginx, namespace: marketpulse}
+spec:
+  podSelector:
+    matchLabels: {app: marketpulse-webapp}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+      ports:
+        - {protocol: TCP, port: 5050}
+---
+# cert-manager's temporary HTTP-01 solver pods live in this namespace and must
+# be reachable by ingress-nginx, or certificate issuance hangs forever.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-acme-http01-solver, namespace: marketpulse}
+spec:
+  podSelector:
+    matchLabels: {acme.cert-manager.io/http01-solver: "true"}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+      ports:
+        - {protocol: TCP, port: 8089}

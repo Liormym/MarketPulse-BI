@@ -2,3 +2,9 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: marketpulse
+  labels:
+    # baseline is enforced; restricted is only reported, because the restricted
+    # profile also demands readOnlyRootFilesystem-adjacent settings we have not
+    # yet validated against the images (see README, "Hardening backlog").
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
