@@ -80,7 +80,7 @@ def upsert_investment_score_history(conn: Connection, rows: list[dict]) -> int:
     holds a v1 (sentiment-based) row it is replaced by the v2 one and the v1-only
     columns are cleared, so a row never mixes versions. Each row needs:
     asset_key, date_key, score, trend_points, momentum_points, sector_points,
-    risk_points, rsi14, close_price, short_percent_of_float, flags (dict),
+    risk_points, insider_points, rsi14, close_price, short_percent_of_float, flags (dict),
     computed_at."""
     if not rows:
         return 0
@@ -90,10 +90,10 @@ def upsert_investment_score_history(conn: Connection, rows: list[dict]) -> int:
             """
             INSERT INTO "FactInvestmentScoreHistory"
                 ("AssetKey", "DateKey", "Score", "ScoreVersion", "TrendPoints", "MomentumPoints",
-                 "SectorPoints", "RiskPoints", "RSI14", "ClosePrice", "ShortPercentOfFloat", "Flags", "ComputedAt")
+                 "SectorPoints", "RiskPoints", "InsiderPoints", "RSI14", "ClosePrice", "ShortPercentOfFloat", "Flags", "ComputedAt")
             VALUES
                 (:asset_key, :date_key, :score, 2, :trend_points, :momentum_points,
-                 :sector_points, :risk_points, :rsi14, :close_price, :short_percent_of_float,
+                 :sector_points, :risk_points, :insider_points, :rsi14, :close_price, :short_percent_of_float,
                  CAST(:flags AS JSONB), :computed_at)
             ON CONFLICT ("AssetKey", "DateKey") DO UPDATE
                 SET "Score" = EXCLUDED."Score",
@@ -102,6 +102,7 @@ def upsert_investment_score_history(conn: Connection, rows: list[dict]) -> int:
                     "MomentumPoints" = EXCLUDED."MomentumPoints",
                     "SectorPoints" = EXCLUDED."SectorPoints",
                     "RiskPoints" = EXCLUDED."RiskPoints",
+                    "InsiderPoints" = EXCLUDED."InsiderPoints",
                     "RSI14" = EXCLUDED."RSI14",
                     "SentimentPoints" = NULL,
                     "TechnicalPoints" = NULL,

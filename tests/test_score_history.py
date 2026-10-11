@@ -49,6 +49,7 @@ def _row(asset_key, date_key, score=60.0, flags=None):
         "momentum_points": 20.0,
         "sector_points": 8.0,
         "risk_points": 6.0,
+        "insider_points": -5.0,
         "rsi14": 55.0,
         "close_price": 123.45,
         "short_percent_of_float": 0.12,

@@ -397,16 +397,15 @@ function renderGovernancePanel(enrichment) {
       : "—";
 
   const txns = enrichment.insider_transactions || [];
-  // has_recent_executive_sale is the authoritative (unlimited, date-filtered)
-  // signal - the visible txns list below is capped, so a sale within the
-  // scoring window can be true even if it doesn't show up in that list.
-  if (enrichment.has_recent_executive_sale) {
-    const detail = txns.find((t) => t.is_executive_sale);
-    alertEl.innerHTML = detail
-      ? `<div class="alert-badge warn">⚠ Key officer sale: ${detail.insider_name} (${detail.position}), ${detail.transaction_date}</div>`
-      : '<div class="alert-badge warn">⚠ Key officer sale in the last 90 days</div>';
+  // insider_net is the SAME value the score uses for its +/-5 modifier and the badge.
+  const act = enrichment.insider_activity || {};
+  const fmtUsd = (v) => (v ? `$${Math.round(v).toLocaleString()}` : "$0");
+  if (enrichment.insider_net === "selling") {
+    alertEl.innerHTML = `<div class="alert-badge bad">⚠ CEO/CFO net selling (90d): sold ${fmtUsd(act.sold_value)} vs bought ${fmtUsd(act.bought_value)} · score −5.0</div>`;
+  } else if (enrichment.insider_net === "buying") {
+    alertEl.innerHTML = `<div class="alert-badge ok">↑ CEO/CFO net buying (90d): bought ${fmtUsd(act.bought_value)} vs sold ${fmtUsd(act.sold_value)} · score +5.0</div>`;
   } else {
-    alertEl.innerHTML = '<div class="alert-badge ok">No recent key-officer sales</div>';
+    alertEl.innerHTML = '<div class="alert-badge neutral">No CEO/CFO net buying or selling in the last 90 days</div>';
   }
 
   if (!txns.length) {
@@ -419,7 +418,7 @@ function renderGovernancePanel(enrichment) {
       (t) => `
       <div class="metric-row">
         <span class="metric-label">${t.insider_name} (${t.position || "—"})</span>
-        <span class="metric-value">${t.transaction_type}${t.shares ? " · " + t.shares.toLocaleString() + " sh" : ""}</span>
+        <span class="metric-value">${t.transaction_type === "Buy" ? "Purchase" : t.transaction_type}${t.shares ? " · " + t.shares.toLocaleString() + " sh" : ""}</span>
       </div>`
     )
     .join("");
@@ -445,7 +444,26 @@ const FLAG_BADGES = {
   bearish_conviction: { label: "🐻 Bearish Conviction", cls: "bearish" },
   high_volatility: { label: "⚡ High Volatility", cls: "warn" },
   insider_selling: { label: "⚠ Insider Selling", cls: "bearish" },
+  insider_buying: { label: "↑ Insider Buying", cls: "bullish" },
 };
+
+// The insider modifier sits outside the pillars: red when it subtracts, green when it adds.
+function modifierTile(m) {
+  const tile = document.createElement("div");
+  tile.className = "subscore-tile";
+  const label = document.createElement("div");
+  label.className = "subscore-label";
+  label.textContent = m.name;
+  const value = document.createElement("div");
+  value.className = `subscore-value ${m.points > 0 ? "positive" : m.points < 0 ? "negative" : ""}`;
+  value.textContent = `${m.points > 0 ? "+" : ""}${m.points.toFixed(1)}`;
+  const range = document.createElement("span");
+  range.className = "subscore-max";
+  range.textContent = ` / \u00b1${m.max}`;
+  value.appendChild(range);
+  tile.append(label, value);
+  return tile;
+}
 
 function renderScoreRationale(scoreDetail) {
   const badgesEl = document.getElementById("score-badges");
@@ -478,6 +496,7 @@ function renderScoreRationale(scoreDetail) {
   );
 
   // One tile per pillar: points earned out of the pillar's maximum.
+  const modifier = scoreDetail.modifier;
   subscoresEl.replaceChildren(
     ...scoreDetail.pillars.map((p) => {
       const tile = document.createElement("div");
@@ -495,7 +514,8 @@ function renderScoreRationale(scoreDetail) {
       value.appendChild(max);
       tile.append(label, value);
       return tile;
-    })
+    }),
+    ...(modifier ? [modifierTile(modifier)] : [])
   );
 
   // Every rule, grouped by pillar: "earned / possible" and why.
@@ -510,6 +530,19 @@ function renderScoreRationale(scoreDetail) {
       const ratio = item.max ? item.points / item.max : 0;
       li.className = ratio >= 0.6 ? "positive" : ratio < 0.4 ? "negative" : "";
       li.textContent = `${item.points.toFixed(1)} / ${item.max.toFixed(0)} pts: ${item.text}`;
+      trailEl.appendChild(li);
+    }
+  }
+  const mod = scoreDetail.modifier;
+  if (mod) {
+    const head = document.createElement("li");
+    head.className = "audit-pillar";
+    head.textContent = `${mod.name}: ${mod.points > 0 ? "+" : ""}${mod.points.toFixed(1)} pts (added to the pillars)`;
+    trailEl.appendChild(head);
+    for (const item of scoreDetail.items.filter((i) => i.pillar === "insider")) {
+      const li = document.createElement("li");
+      li.className = item.points > 0 ? "positive" : item.points < 0 ? "negative" : "";
+      li.textContent = `${item.points > 0 ? "+" : ""}${item.points.toFixed(1)} pts: ${item.text}`;
       trailEl.appendChild(li);
     }
   }

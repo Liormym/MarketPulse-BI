@@ -14,7 +14,7 @@ from sqlalchemy import text  # noqa: E402
 
 from marketpulse.load.db import get_engine  # noqa: E402
 from marketpulse.recent_news import safe_http_url  # noqa: E402
-from marketpulse.scoring import RSI_COMPARE_BARS  # noqa: E402
+from marketpulse.scoring import RSI_COMPARE_BARS, SECTOR_RELATIVE_BARS_DEFAULT  # noqa: E402
 from marketpulse.news_relevance import publisher_of, strip_publisher  # noqa: E402
 from marketpulse.sector_flow import SECTOR_SPDR_TICKERS, SECTOR_TO_SPDR  # noqa: E402
 
@@ -23,7 +23,7 @@ from marketpulse.sector_flow import SECTOR_SPDR_TICKERS, SECTOR_TO_SPDR  # noqa:
 # either threshold surfaces the dashboard's "Macro Risk Alert" banner.
 MACRO_RISK_10Y_YIELD_THRESHOLD = 4.25  # percent
 MACRO_RISK_OIL_THRESHOLD = 85.0  # USD/barrel, WTI
-SECTOR_RELATIVE_BARS = 20  # trading bars for the sector-vs-S&P 500 comparison
+SECTOR_RELATIVE_BARS = SECTOR_RELATIVE_BARS_DEFAULT  # trading bars for the sector-vs-S&P 500 comparison
 
 
 def get_asset_key(ticker: str) -> int | None:
@@ -179,7 +179,7 @@ def build_score_kwargs(data: dict, sector_flow: dict | None, enrichment: dict | 
         sector_flow_status=sector_flow["flow_status"] if sector_flow else None,
         sector_rel_20d_pct=sector_flow["rel_20d_pct"] if sector_flow else None,
         short_percent_of_float=enrichment["short_percent_of_float"] if enrichment else None,
-        has_recent_executive_sale=bool(enrichment and enrichment["has_recent_executive_sale"]),
+        insider_net=enrichment["insider_net"] if enrichment else None,
     )
 
 

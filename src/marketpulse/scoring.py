@@ -7,7 +7,7 @@ It is a DIAGNOSTIC SNAPSHOT of how a stock looks right now, not a forecast.
 see README; v2 makes no claim to have fixed that, it only makes the picture
 cleaner and every point traceable.)
 
-Three pillars, one scale for every stock (same rules, same maxima):
+Three pillars plus one explicit modifier, one scale for every stock:
 
     Pillar 1  Trend & moving averages          45 pts
         price vs SMA20 (10) + vs SMA50 (10) + vs SMA200 (10) + SMA50 vs SMA200 (15)
@@ -17,8 +17,14 @@ Three pillars, one scale for every stock (same rules, same maxima):
         (>70) is progressively penalised so stretched stocks cannot reach 80+
     Pillar 3  Sector & risk/short profile      25 pts
         sector flow (10) + sector 20-day performance vs the S&P 500 (5)
-        short interest (5) + volatility vs own history (3) + insider selling (2)
-        (a typical stock earns about 7 of these 10: low-ish shorts, normal volatility, no CEO/CFO selling)
+        short interest (6) + volatility vs own history (4)
+        (a typical stock earns about 6 of these 10)
+    Modifier  CEO/CFO insider activity, last 90 days   -5 / 0 / +5 pts
+        net selling = exactly -5.0 and the red "Insider Selling" badge;
+        net buying  = exactly +5.0 and the green "Insider Buying" badge;
+        no activity = 0 and no badge. It is added to the pillar total and the
+        result is clamped to 0-100. Points and badge come from ONE value
+        (`insider_net`), so they cannot disagree.
 
 GRADED, NOT BINARY. The v1 rules were all-or-nothing ("price above SMA50: +10,
 else 0"), which scored every ordinary stock harshly. Here each moving-average
@@ -73,15 +79,16 @@ RSI_COMPARE_BARS = 5
 PTS_SECTOR_FLOW = {"Accumulation": 10.0, "Neutral": 5.0, "Distribution": 0.0}
 PTS_SECTOR_FLOW_MAX = 10.0
 PTS_SECTOR_RELATIVE_MAX = 5.0
+SECTOR_RELATIVE_BARS_DEFAULT = 20  # trading bars compared for sector vs S&P 500 (webapp/db.py uses the same)
 SECTOR_RELATIVE_BAND_PCT = 3.0  # sector 20d return vs S&P 500: +3 pts-of-percent = full, -3 = zero
-PTS_SHORT_MAX = 5.0
+PTS_SHORT_MAX = 6.0
 SHORT_HIGH = 0.10  # fraction of float: zero short-interest points at/above this (squeeze exception below)
-PTS_SHORT_SQUEEZE = 4.0
+PTS_SHORT_SQUEEZE = 4.8
 SQUEEZE_MIN_TREND_FRACTION = 0.6  # trend pillar share needed to read heavy shorting as a squeeze setup
-PTS_VOLATILITY_MAX = 3.0
+PTS_VOLATILITY_MAX = 4.0
 ATR_ZSCORE_PENALTY_THRESHOLD = 1.5  # SD above the stock's own 90-day ATR average
-PTS_INSIDER_MAX = 2.0
-INSIDER_SELLING_LOOKBACK_DAYS = 90  # how far back a CEO/CFO sale still counts as "recent"
+INSIDER_MODIFIER_POINTS = 5.0  # +/- applied for CEO/CFO net buying / net selling
+INSIDER_LOOKBACK_DAYS = 90  # window for "recent" CEO/CFO trades (see marketpulse.insider)
 
 
 @dataclass
@@ -99,6 +106,7 @@ class ScoreBreakdown:
     momentum_points: float | None = None
     sector_points: float | None = None
     risk_points: float | None = None
+    insider_points: float | None = None  # -5.0 / 0.0 / +5.0, added on top of the pillars
     items: list[ScoreItem] = field(default_factory=list)
     flags: dict = field(default_factory=dict)
     reason: str | None = None
@@ -232,7 +240,7 @@ def _sector_items(flow_status: str | None, sector_rel_20d_pct: float | None) -> 
     return items
 
 
-def _risk_items(trend_points, short_pct, atr14, atr_avg, atr_std, has_exec_sale, flags) -> list[ScoreItem]:
+def _risk_items(trend_points, short_pct, atr14, atr_avg, atr_std, flags) -> list[ScoreItem]:
     """Graded like the trend rules: a typical stock earns about half, a clearly
     low-risk one approaches the maximum, a clearly risky one approaches zero."""
     items = []
@@ -270,12 +278,21 @@ def _risk_items(trend_points, short_pct, atr14, atr_avg, atr_std, has_exec_sale,
             )
         )
 
-    if has_exec_sale:
-        flags["insider_selling"] = True
-        items.append(ScoreItem("risk", 0.0, PTS_INSIDER_MAX, f"CEO/CFO selling in the last {INSIDER_SELLING_LOOKBACK_DAYS} days"))
-    else:
-        items.append(ScoreItem("risk", PTS_INSIDER_MAX, PTS_INSIDER_MAX, "No recent CEO/CFO selling recorded"))
     return items
+
+
+def _insider_item(insider_net: str | None, flags: dict) -> ScoreItem:
+    """The ONE place the insider badge and the insider points are decided."""
+    if insider_net == "selling":
+        flags["insider_selling"] = True
+        return ScoreItem("insider", -INSIDER_MODIFIER_POINTS, INSIDER_MODIFIER_POINTS,
+                         f"CEO/CFO net selling in the last {INSIDER_LOOKBACK_DAYS} days")
+    if insider_net == "buying":
+        flags["insider_buying"] = True
+        return ScoreItem("insider", INSIDER_MODIFIER_POINTS, INSIDER_MODIFIER_POINTS,
+                         f"CEO/CFO net buying in the last {INSIDER_LOOKBACK_DAYS} days")
+    return ScoreItem("insider", 0.0, INSIDER_MODIFIER_POINTS,
+                     f"No CEO/CFO net buying or selling in the last {INSIDER_LOOKBACK_DAYS} days")
 
 
 def compute_investment_score(
@@ -292,7 +309,7 @@ def compute_investment_score(
     sector_flow_status: str | None = None,
     sector_rel_20d_pct: float | None = None,
     short_percent_of_float: float | None = None,
-    has_recent_executive_sale: bool = False,
+    insider_net: str | None = None,
 ) -> ScoreBreakdown:
     """`closes` and the `sma*_series` are ordered oldest-to-newest; only the
     newest values are used. `rsi14_prev` is the RSI RSI_COMPARE_BARS bars ago."""
@@ -307,9 +324,8 @@ def compute_investment_score(
     trend_pts = sum(i.points for i in trend)
     momentum = _momentum_items(rsi14, rsi14_prev, flags)
     sector = _sector_items(sector_flow_status, sector_rel_20d_pct)
-    risk = _risk_items(
-        trend_pts, short_percent_of_float, atr14, atr_90d_avg, atr_90d_std, has_recent_executive_sale, flags
-    )
+    risk = _risk_items(trend_pts, short_percent_of_float, atr14, atr_90d_avg, atr_90d_std, flags)
+    insider = _insider_item(insider_net, flags)
 
     pillars = {
         "trend": trend_pts,
@@ -320,12 +336,13 @@ def compute_investment_score(
     return ScoreBreakdown(
         # Continuous on purpose: rounding to an integer created 5-way ties at the
         # top of the ranking; the UI shows one decimal and ranks on this value.
-        score=round(_clamp(sum(pillars.values()), 0, 100), 4),
+        score=round(_clamp(sum(pillars.values()) + insider.points, 0, 100), 4),
         trend_points=round(pillars["trend"], 1),
         momentum_points=round(pillars["momentum"], 1),
         sector_points=round(pillars["sector"], 1),
         risk_points=round(pillars["risk"], 1),
-        items=trend + momentum + sector + risk,
+        insider_points=insider.points,
+        items=trend + momentum + sector + risk + [insider],
         flags=flags,
     )
 

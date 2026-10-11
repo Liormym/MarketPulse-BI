@@ -23,7 +23,12 @@ SRC_PATH = str(Path(__file__).resolve().parents[1] / "src")
 if SRC_PATH not in sys.path:
     sys.path.insert(0, SRC_PATH)
 
-from marketpulse.scoring import INSIDER_SELLING_LOOKBACK_DAYS  # noqa: E402
+from marketpulse.insider import (  # noqa: E402
+    INSIDER_LOOKBACK_DAYS,
+    classify_transaction,
+    is_ceo_cfo,
+    net_insider_activity,
+)
 
 CACHE_TTL = timedelta(hours=24)
 DISPLAY_TRANSACTION_LIMIT = 10
@@ -50,22 +55,6 @@ def _finite_number(value):
     return number if math.isfinite(number) else None
 
 
-def _classify_transaction_text(raw_text: str | None) -> str | None:
-    t = (raw_text or "").strip().lower()
-    if t.startswith("sale"):
-        return "Sale"
-    if t.startswith("stock gift"):
-        return "Gift"
-    if t:
-        return "Other"
-    return None  # no discernible transaction type (often an unpriced option exercise/conversion)
-
-
-def _is_key_officer(position: str | None) -> bool:
-    p = (position or "").lower()
-    return "chief" in p or "ceo" in p
-
-
 def _fetch_info_snapshot(ticker: str) -> dict | None:
     """Short interest + fundamentals from ONE Ticker.info call. Returns None if
     the call itself failed (so the caller keeps whatever it already cached
@@ -87,17 +76,19 @@ def _fetch_info_snapshot(ticker: str) -> dict | None:
     }
 
 
-def _fetch_insider_transactions(ticker: str) -> list[dict]:
+def _fetch_insider_transactions(ticker: str) -> list[dict] | None:
+    """None means the fetch FAILED (the caller must not advance the freshness
+    timestamp); an empty list means the call worked and there are no filings."""
     try:
         df = yf.Ticker(ticker).insider_transactions
     except Exception:
-        return []
+        return None
     if df is None or df.empty:
         return []
 
     records = []
     for _, row in df.iterrows():
-        txn_type = _classify_transaction_text(row.get("Text"))
+        txn_type = classify_transaction(row.get("Text"))
         if txn_type is None:
             continue
 
@@ -118,21 +109,24 @@ def _fetch_insider_transactions(ticker: str) -> list[dict]:
                 "shares": shares,
                 "value": value,
                 "transaction_date": start_date.date() if hasattr(start_date, "date") else start_date,
-                "is_executive_sale": txn_type == "Sale" and _is_key_officer(row.get("Position")),
+                "is_executive_sale": txn_type == "Sale" and is_ceo_cfo(row.get("Position")),
+                "is_executive_buy": txn_type == "Buy" and is_ceo_cfo(row.get("Position")),
             }
         )
     return records
 
 
 def get_or_fetch_enrichment(conn, asset_key: int, ticker: str) -> dict:
-    """Returns {"short_percent_of_float", "fundamentals", "has_recent_executive_sale",
-    "insider_transactions"}, refreshing short interest and fundamentals from
-    yfinance if the cached snapshot is missing, stale, or predates the
-    fundamentals columns.
+    """Returns {"short_percent_of_float", "fundamentals", "insider_net",
+    "insider_activity", "insider_transactions"}, refreshing short interest,
+    fundamentals and insider filings from yfinance when their cached copy is
+    missing or older than CACHE_TTL. `insider_net` is "selling", "buying" or None:
+    the CEO/CFO net direction over the last INSIDER_LOOKBACK_DAYS days.
     """
     cached = conn.execute(
         text(
-            '''SELECT "ShortPercentOfFloat", "FetchedAt", "TrailingPE", "MarketCap", "Beta", "FundamentalsFetchedAt"
+            '''SELECT "ShortPercentOfFloat", "FetchedAt", "TrailingPE", "MarketCap", "Beta", "FundamentalsFetchedAt",
+                      "InsiderFetchedAt"
                FROM "StockEnrichmentCache" WHERE "AssetKey" = :asset_key'''
         ),
         {"asset_key": asset_key},
@@ -189,31 +183,49 @@ def get_or_fetch_enrichment(conn, asset_key: int, ticker: str) -> dict:
         short_pct = None
         fundamentals = {"trailing_pe": None, "market_cap": None, "beta": None, "as_of": None}
 
-    has_transactions = conn.execute(
-        text('SELECT 1 FROM "InsiderTransactions" WHERE "AssetKey" = :asset_key LIMIT 1'),
-        {"asset_key": asset_key},
-    ).first()
-    if has_transactions is None:
-        for txn in _fetch_insider_transactions(ticker):
+    insider_stale = (
+        cached is None
+        or cached[6] is None  # never fetched, or flagged for re-classification by a migration
+        or (datetime.now(timezone.utc) - cached[6]) > CACHE_TTL
+    )
+    fetched_insiders = _fetch_insider_transactions(ticker) if insider_stale else None
+    if fetched_insiders is not None:
+        for txn in fetched_insiders:
             conn.execute(
                 text(
                     """
                     INSERT INTO "InsiderTransactions"
                         ("TransactionID", "AssetKey", "InsiderName", "Position", "TransactionType",
-                         "Shares", "Value", "TransactionDate", "IsExecutiveSale")
+                         "Shares", "Value", "TransactionDate", "IsExecutiveSale", "IsExecutiveBuy")
                     VALUES (:transaction_id, :asset_key, :insider_name, :position, :transaction_type,
-                            :shares, :value, :transaction_date, :is_executive_sale)
-                    ON CONFLICT ("TransactionID") DO NOTHING
+                            :shares, :value, :transaction_date, :is_executive_sale, :is_executive_buy)
+                    ON CONFLICT ("TransactionID") DO UPDATE
+                        SET "Position" = EXCLUDED."Position",
+                            "TransactionType" = EXCLUDED."TransactionType",
+                            "IsExecutiveSale" = EXCLUDED."IsExecutiveSale",
+                            "IsExecutiveBuy" = EXCLUDED."IsExecutiveBuy"
                     """
                 ),
                 {**txn, "asset_key": asset_key},
             )
+        # Only after a successful fetch. A brand-new cache row is created already
+        # stale for the short-interest snapshot (epoch), so it is fetched next time.
+        conn.execute(
+            text(
+                """
+                INSERT INTO "StockEnrichmentCache" ("AssetKey", "FetchedAt", "InsiderFetchedAt")
+                VALUES (:asset_key, to_timestamp(0), now())
+                ON CONFLICT ("AssetKey") DO UPDATE SET "InsiderFetchedAt" = now()
+                """
+            ),
+            {"asset_key": asset_key},
+        )
 
     transactions = conn.execute(
         text(
             """
             SELECT "InsiderName", "Position", "TransactionType", "Shares", "Value",
-                   "TransactionDate", "IsExecutiveSale"
+                   "TransactionDate", "IsExecutiveSale", "IsExecutiveBuy"
             FROM "InsiderTransactions"
             WHERE "AssetKey" = :asset_key
             ORDER BY "TransactionDate" DESC
@@ -223,29 +235,39 @@ def get_or_fetch_enrichment(conn, asset_key: int, ticker: str) -> dict:
         {"asset_key": asset_key, "limit": DISPLAY_TRANSACTION_LIMIT},
     ).mappings().all()
 
-    # Deliberately NOT derived from the (LIMIT'd) `transactions` list above:
-    # a display list capped at DISPLAY_TRANSACTION_LIMIT can easily exclude an
-    # executive sale that's still within the scoring lookback window if a
-    # non-executive insider has traded more frequently since.
-    cutoff = date.today() - timedelta(days=INSIDER_SELLING_LOOKBACK_DAYS)
-    has_recent_executive_sale = (
-        conn.execute(
-            text(
-                """
-                SELECT 1 FROM "InsiderTransactions"
-                WHERE "AssetKey" = :asset_key AND "IsExecutiveSale" = TRUE AND "TransactionDate" >= :cutoff
-                LIMIT 1
-                """
-            ),
-            {"asset_key": asset_key, "cutoff": cutoff},
-        ).first()
-        is not None
+    # Deliberately NOT derived from the (LIMIT'd) `transactions` list above: a
+    # display list capped at DISPLAY_TRANSACTION_LIMIT can easily exclude a CEO/CFO
+    # trade that is still inside the scoring window.
+    cutoff = date.today() - timedelta(days=INSIDER_LOOKBACK_DAYS)
+    window_rows = conn.execute(
+        text(
+            """
+            SELECT "TransactionDate", "Value", "Shares", "IsExecutiveSale", "IsExecutiveBuy"
+            FROM "InsiderTransactions"
+            WHERE "AssetKey" = :asset_key AND "TransactionDate" >= :cutoff
+              AND ("IsExecutiveSale" OR "IsExecutiveBuy")
+            """
+        ),
+        {"asset_key": asset_key, "cutoff": cutoff},
+    ).mappings().all()
+    insider_activity = net_insider_activity(
+        [
+            {
+                "transaction_date": r["TransactionDate"],
+                "value": r["Value"],
+                "shares": r["Shares"],
+                "is_executive_sale": r["IsExecutiveSale"],
+                "is_executive_buy": r["IsExecutiveBuy"],
+            }
+            for r in window_rows
+        ]
     )
 
     return {
         "short_percent_of_float": short_pct,
         "fundamentals": fundamentals,
-        "has_recent_executive_sale": has_recent_executive_sale,
+        "insider_net": insider_activity["net"],
+        "insider_activity": insider_activity,
         "insider_transactions": [
             {
                 "insider_name": t["InsiderName"],
@@ -255,6 +277,7 @@ def get_or_fetch_enrichment(conn, asset_key: int, ticker: str) -> dict:
                 "value": t["Value"],
                 "transaction_date": t["TransactionDate"].isoformat() if t["TransactionDate"] else None,
                 "is_executive_sale": t["IsExecutiveSale"],
+                "is_executive_buy": t["IsExecutiveBuy"],
             }
             for t in transactions
         ],

@@ -31,7 +31,7 @@ def _kw(price=100.0, sma20=100.0, sma50=100.0, sma200=100.0, **over):
         sector_flow_status="Neutral",
         sector_rel_20d_pct=0.0,
         short_percent_of_float=0.03,
-        has_recent_executive_sale=False,
+        insider_net=None,
     )
     kw.update(over)
     return kw
@@ -135,20 +135,74 @@ def test_short_interest_squeeze_vs_bearish_conviction():
     assert score(**_kw(short_percent_of_float=0.0)).risk_points > score(**_kw(short_percent_of_float=0.08)).risk_points
 
 
-def test_volatility_and_insider_selling_reduce_the_risk_pillar():
+def test_volatility_reduces_the_risk_pillar_and_best_case_reaches_its_max():
     calm = score(**_kw()).risk_points
     jumpy = score(**_kw(atr14=1.0 + (ATR_ZSCORE_PENALTY_THRESHOLD + 1) * 0.2)).risk_points
-    sold = score(**_kw(has_recent_executive_sale=True)).risk_points
-    assert jumpy < calm and sold < calm
-    assert score(**_kw(short_percent_of_float=0.0, atr14=0.7)).risk_points == RISK_MAX  # best case: no shorts, calm, no sales
+    assert jumpy < calm
+    assert score(**_kw(short_percent_of_float=0.0, atr14=0.7)).risk_points == RISK_MAX  # no shorts, very calm
+
+
+def test_risk_pillar_is_six_points_short_interest_plus_four_volatility():
+    best = score(**_kw(short_percent_of_float=0.0, atr14=0.7))
+    risk_items = [i for i in best.items if i.pillar == "risk"]
+    assert [i.max_points for i in risk_items] == [6.0, 4.0]
+    assert sum(i.points for i in risk_items) == RISK_MAX == 10.0
+
+
+def test_insider_net_selling_is_exactly_minus_five_with_a_red_badge():
+    base = score(**_kw())
+    sold = score(**_kw(insider_net="selling"))
+    assert sold.insider_points == -5.0
+    assert sold.score == pytest.approx(base.score - 5.0)
+    assert sold.flags.get("insider_selling") is True and "insider_buying" not in sold.flags
+    assert sold.risk_points == base.risk_points  # a modifier on top of the pillars, not buried in one
+    line = [i for i in sold.items if i.pillar == "insider"][0]
+    assert line.points == -5.0 and "CEO/CFO net selling in the last 90 days" in line.text
+
+
+def test_insider_net_buying_is_exactly_plus_five_with_a_green_badge():
+    base = score(**_kw())
+    bought = score(**_kw(insider_net="buying"))
+    assert bought.insider_points == 5.0
+    assert bought.score == pytest.approx(base.score + 5.0)
+    assert bought.flags.get("insider_buying") is True and "insider_selling" not in bought.flags
+    assert "CEO/CFO net buying in the last 90 days" in [i for i in bought.items if i.pillar == "insider"][0].text
+
+
+def test_no_insider_activity_is_zero_points_and_no_badge():
+    r = score(**_kw(insider_net=None))
+    assert r.insider_points == 0.0
+    assert "insider_selling" not in r.flags and "insider_buying" not in r.flags
+    assert [i for i in r.items if i.pillar == "insider"][0].points == 0.0
+
+
+@pytest.mark.parametrize("net", [None, "selling", "buying"])
+def test_badge_and_points_are_always_synchronised(net):
+    r = score(**_kw(insider_net=net))
+    assert (r.flags.get("insider_selling", False), r.flags.get("insider_buying", False)) == (
+        net == "selling",
+        net == "buying",
+    )
+    assert r.insider_points == {None: 0.0, "selling": -5.0, "buying": 5.0}[net]
+
+
+def test_insider_modifier_is_clamped_to_the_0_to_100_range():
+    top = score(**_kw(price=130.0, sma20=120.0, sma50=110.0, sma200=100.0, rsi14=60.0,
+                      sector_flow_status="Accumulation", sector_rel_20d_pct=5.0,
+                      short_percent_of_float=0.0, atr14=0.7, insider_net="buying"))
+    assert top.score == 100.0  # 100 from the pillars + 5, clamped
+    bottom = score(**_kw(price=70.0, sma20=100.0, sma50=110.0, sma200=120.0, rsi14=5.0,
+                         sector_flow_status="Distribution", sector_rel_20d_pct=-9.0,
+                         short_percent_of_float=0.2, atr14=3.0, insider_net="selling"))
+    assert bottom.score >= 0.0
 
 
 def test_score_equals_sum_of_pillars_and_audit_trail_explains_every_point():
     r = score(**_kw(price=108.0, sma20=104.0, sma50=102.0, sma200=96.0, rsi14=62.0, sector_flow_status="Accumulation", sector_rel_20d_pct=1.0))
     pillars = r.trend_points + r.momentum_points + r.sector_points + r.risk_points
-    assert abs(r.score - pillars) <= 1.0  # only the final rounding
-    assert sum(i.points for i in r.items) == pytest.approx(pillars, abs=0.2)
-    assert {i.pillar for i in r.items} == {"trend", "momentum", "sector", "risk"}
+    assert abs(r.score - (pillars + r.insider_points)) <= 0.5  # only the pillar rounding
+    assert sum(i.points for i in r.items) == pytest.approx(r.score, abs=0.2)  # every point is in the trail
+    assert {i.pillar for i in r.items} == {"trend", "momentum", "sector", "risk", "insider"}
     assert all(i.text for i in r.items) and len(r.audit_trail) == len(r.items)
 
 

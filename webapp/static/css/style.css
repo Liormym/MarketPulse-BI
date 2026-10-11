@@ -940,3 +940,6 @@ a.driver-title:hover { color: var(--accent); text-decoration: underline; }
 .subscore-max { font-size: 12px; color: var(--text-dim); font-weight: 400; }
 .audit-trail li.audit-pillar { background: none; border: none; border-left: 0; padding: 12px 0 2px; font-family: var(--font-sans, inherit); font-weight: 600; color: var(--text); font-size: 13px; }
 .audit-trail li.audit-total { background: none; border-left: 0; color: var(--text-muted); font-family: var(--font-sans, inherit); padding-top: 12px; }
+
+.alert-badge.bad { background: var(--neg-soft); color: var(--neg); }
+.alert-badge.neutral { background: var(--surface); color: var(--text-muted); }

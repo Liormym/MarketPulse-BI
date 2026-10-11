@@ -26,7 +26,7 @@ from marketpulse.config import settings  # noqa: E402
 from marketpulse.live_refresh import refresh_ticker  # noqa: E402
 from marketpulse.load.db import get_engine  # noqa: E402
 from marketpulse.pattern_detection import detect_patterns  # noqa: E402
-from marketpulse.scoring import PILLAR_MAX, compute_investment_score, signal_label  # noqa: E402
+from marketpulse.scoring import INSIDER_MODIFIER_POINTS, PILLAR_MAX, compute_investment_score, signal_label  # noqa: E402
 from marketpulse.technicals import RSI_OVERBOUGHT, RSI_OVERSOLD, describe_gap, describe_rsi  # noqa: E402
 from rate_limit import check_and_record_refresh  # noqa: E402
 
@@ -187,6 +187,14 @@ def api_stock(ticker: str):
                 ("risk", "Short & Risk Profile", breakdown.risk_points),
             )
         ],
+        # The CEO/CFO insider modifier sits outside the pillars: added to their total.
+        "modifier": {
+            "key": "insider",
+            "name": "CEO/CFO Insider Activity",
+            "points": breakdown.insider_points,
+            "min": -INSIDER_MODIFIER_POINTS,
+            "max": INSIDER_MODIFIER_POINTS,
+        },
         "items": [
             {"pillar": i.pillar, "points": round(i.points, 1), "max": i.max_points, "text": i.text}
             for i in breakdown.items

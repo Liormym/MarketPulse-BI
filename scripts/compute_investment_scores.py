@@ -143,6 +143,7 @@ def main() -> None:
                     "momentum_points": breakdown.momentum_points,
                     "sector_points": breakdown.sector_points,
                     "risk_points": breakdown.risk_points,
+                    "insider_points": breakdown.insider_points,
                     "rsi14": snapshot["rsi14"],
                     "close_price": snapshot["close_price"],
                     "short_percent_of_float": snapshot["short_percent_of_float"],

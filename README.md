@@ -101,7 +101,8 @@ The Investment Score (v2) is **100% quantitative: no news, no sentiment**. It is
 |---|---|---|
 | **1. Trend & Moving Averages** | 45 | Price vs SMA-20 (10), SMA-50 (10), SMA-200 (10), and SMA-50 vs SMA-200 alignment (15) |
 | **2. Momentum & RSI-14 regime** | 30 | Healthy bullish RSI (about 55-65) scores highest, neutral RSI moderate, oversold-and-recovering is rewarded, overbought (above 70) is progressively penalised so stretched stocks cannot reach 80+ |
-| **3. Sector & Risk/Short profile** | 25 | Sector money-flow (10) + sector 20-day performance vs the S&P 500 (5) + short interest (5) + volatility vs its own history (3) + CEO/CFO selling (2) |
+| **3. Sector & Risk/Short profile** | 25 | Sector money-flow (10) + sector 20-day performance vs the S&P 500 (5) + short interest (6) + volatility vs its own history (4) |
+| **Modifier: CEO/CFO insider activity** | −5 / 0 / +5 | Net selling over the last 90 days is exactly **−5.0** (red *Insider Selling* badge), net buying exactly **+5.0** (green *Insider Buying* badge), none 0; added to the pillars and clamped to 0-100. Only open-market sales and purchases by the CEO or CFO count (not grants, gifts or option exercises). Badge and points come from one value, so they cannot disagree. |
 
 **Graded, not binary.** Each moving-average rule is a smooth ramp: half the points when price sits exactly on the average, full a "band" above it, zero a band below. A stock with no edge lands mid-scale in every pillar (a perfectly neutral stock scores about 50-58), and missing data counts as neutral and says so, never as bad.
 
@@ -115,7 +116,7 @@ Momentum & RSI-14: 30.0 / 30 pts
   30.0 / 30 pts: RSI-14 is 61.2: healthy bullish momentum range (45-65)
 ```
 
-Bands shown in the UI are diagnostic labels: **70+ Strong Signal, 45-69 Neutral / Mixed, below 45 Weak Signal**. `scripts/evaluate_score_ic.py` (run weekly) measures whether the score has actually preceded outperformance, at 5, 20 and 60 trading days with per-pillar attribution; it reports "INSUFFICIENT DATA" rather than a number until enough history exists.
+Bands shown in the UI are diagnostic labels: **70+ Strong Signal, 45-69 Neutral / Mixed, below 45 Weak Signal**. `scripts/score_backtest.py` replays the exact v2 formula at every month-end since 2005 (see `reports/`), and `scripts/evaluate_score_ic.py` (run weekly) measures whether the score has actually preceded outperformance, at 5, 20 and 60 trading days with per-pillar attribution; it reports "INSUFFICIENT DATA" rather than a number until enough history exists.
 
 ### 📊 Data Engineering at Scale
 

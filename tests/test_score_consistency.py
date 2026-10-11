@@ -50,3 +50,4 @@ def test_batch_and_live_paths_compute_the_identical_score_for_the_same_ticker():
     assert batch_breakdown.momentum_points == live_pillars["momentum"]
     assert batch_breakdown.sector_points == live_pillars["sector"]
     assert batch_breakdown.risk_points == live_pillars["risk"]
+    assert batch_breakdown.insider_points == live_payload["score_detail"]["modifier"]["points"]
