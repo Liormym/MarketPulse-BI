@@ -39,7 +39,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: eod-update
-              image: ghcr.io/liormym/marketpulse-pipeline:sha-339e49d-amd64 # built by .github/workflows/ci.yml
+              image: ghcr.io/liormym/marketpulse-pipeline:sha-78b0d7c-amd64 # built by .github/workflows/ci.yml
               command: ["python", "scripts/run_daily_update.py"]
               envFrom:
                 - secretRef:

@@ -27,7 +27,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: migrate
-          image: ghcr.io/liormym/marketpulse-pipeline:sha-339e49d-amd64
+          image: ghcr.io/liormym/marketpulse-pipeline:sha-78b0d7c-amd64
           imagePullPolicy: IfNotPresent
           command: ["sh", "-ec", "python scripts/apply_migrations.py && python scripts/seed_dimensions.py"]
           envFrom:

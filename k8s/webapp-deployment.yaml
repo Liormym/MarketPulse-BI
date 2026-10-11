@@ -31,7 +31,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: webapp
-          image: ghcr.io/liormym/marketpulse-webapp:sha-339e49d-amd64
+          image: ghcr.io/liormym/marketpulse-webapp:sha-78b0d7c-amd64
           imagePullPolicy: IfNotPresent
           ports:
             - {name: http, containerPort: 5050}
