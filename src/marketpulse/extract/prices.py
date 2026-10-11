@@ -9,7 +9,7 @@ every request start goes through the shared outbound rate limiter. Each ticker
 still gets its own history() call, deliberately not yf.download(): download()
 fans out to the same per-ticker endpoint anyway, and on full-history requests
 its values differ from history() by ~1e-6 relative (and it turns Volume into
-float), which would make the backfill and the nightly upsert disagree.
+float), which would make the backfill and the scheduled upsert disagree.
 
 Rows with Volume == 0 are dropped rather than stored. yfinance returns a
 phantom row (stale carried-forward Close, zero volume) for exchange-specific

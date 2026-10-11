@@ -46,7 +46,7 @@ def check_date_out_of_range(records: list, valid_date_keys: set[int], date_attr:
 
     News feeds occasionally resurface old/republished articles with a stale
     `published` date (seen: an RSS entry dated 2021 showing up in a routine
-    fetch); loading it would violate FactSentiment's DateKey FK. Rejected here
+    fetch); loading it would violate the DateKey foreign key. Rejected here
     rather than at the DB, matching the spec §8 pattern for bad dates.
     """
     good, bad = [], []
@@ -132,21 +132,6 @@ def check_duplicate_price_records(price_records: list):
         details=f"{dup_count} duplicate price rows deduplicated" if dup_count else "",
     )
     return good, result
-
-
-def check_missing_sentiment_result(scored_articles: list):
-    """Articles with score is None are NOT dropped — flagged and kept, per spec §8."""
-    missing = [a for a in scored_articles if a.score is None]
-    result = CheckResult(
-        check_type="MissingSentimentResult",
-        passed=len(missing) == 0,
-        failed_records=len(missing),
-        details=f"{len(missing)} articles flagged without a sentiment score (kept in NewsArticles)"
-        if missing
-        else "",
-    )
-    return result
-
 
 def check_missing_closing_price(expected_ticker_dates: set[tuple[str, "date"]], present: set[tuple[str, "date"]]):
     """Compares trading-day x ticker combinations expected vs. what was actually loaded."""

@@ -8,6 +8,17 @@ orchestrator = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(orchestrator)
 
 
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_db_stamp(monkeypatch):
+    """Orchestrator tests must never write the real "last EOD update" timestamp."""
+    stamped = []
+    monkeypatch.setattr(orchestrator, "_record_success", lambda: stamped.append(1))
+    return stamped
+
+
 def test_steps_run_in_order_on_success(tmp_path, monkeypatch):
     log = tmp_path / "order.txt"
     steps = [
@@ -40,3 +51,17 @@ def test_pipeline_stops_at_first_failing_step(tmp_path, monkeypatch):
         raise AssertionError("main() must exit non-zero when a step fails")
 
     assert not marker.exists()
+
+
+def test_completion_is_stamped_only_when_every_step_succeeds(tmp_path, monkeypatch, _no_db_stamp):
+    ok = [("ok", [sys.executable, "-c", "pass"])]
+    monkeypatch.setattr(orchestrator, "STEPS", ok)
+    orchestrator.main()
+    assert _no_db_stamp == [1]
+
+    monkeypatch.setattr(orchestrator, "STEPS", ok + [("bad", [sys.executable, "-c", "import sys; sys.exit(1)"])])
+    try:
+        orchestrator.main()
+    except SystemExit:
+        pass
+    assert _no_db_stamp == [1]  # unchanged by the failed run

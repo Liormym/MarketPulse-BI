@@ -13,7 +13,9 @@ if SRC_PATH not in sys.path:
 from sqlalchemy import text  # noqa: E402
 
 from marketpulse.load.db import get_engine  # noqa: E402
-from marketpulse.scoring import SENTIMENT_LOOKBACK_DAYS  # noqa: E402
+from marketpulse.recent_news import safe_http_url  # noqa: E402
+from marketpulse.scoring import RSI_COMPARE_BARS  # noqa: E402
+from marketpulse.news_relevance import publisher_of, strip_publisher  # noqa: E402
 from marketpulse.sector_flow import SECTOR_SPDR_TICKERS, SECTOR_TO_SPDR  # noqa: E402
 
 # Historically, elevated yields/oil have put sustained pressure on equity
@@ -21,6 +23,7 @@ from marketpulse.sector_flow import SECTOR_SPDR_TICKERS, SECTOR_TO_SPDR  # noqa:
 # either threshold surfaces the dashboard's "Macro Risk Alert" banner.
 MACRO_RISK_10Y_YIELD_THRESHOLD = 4.25  # percent
 MACRO_RISK_OIL_THRESHOLD = 85.0  # USD/barrel, WTI
+SECTOR_RELATIVE_BARS = 20  # trading bars for the sector-vs-S&P 500 comparison
 
 
 def get_asset_key(ticker: str) -> int | None:
@@ -48,8 +51,8 @@ def get_tickers() -> list[dict]:
     ]
 
 
-def get_price_sentiment_history(ticker: str) -> dict | None:
-    """Daily close price + aggregated sentiment for one ticker, joined on DimDate.
+def get_price_history(ticker: str) -> dict | None:
+    """Daily price, volume and technicals for one ticker, joined on DimDate.
 
     Returns None if the ticker isn't in DimAsset at all; returns an entry with
     empty series if the asset exists but has no FactDailyPrice rows yet.
@@ -68,16 +71,14 @@ def get_price_sentiment_history(ticker: str) -> dict | None:
             p."Close"               AS close,
             p."Open"                AS open,
             p."Volume"              AS volume,
-            s."AvgSentimentScore"   AS sentiment,
             t."SMA20"               AS sma20,
             t."SMA50"               AS sma50,
             t."SMA150"              AS sma150,
             t."SMA200"              AS sma200,
-            t."GapPct"              AS gap_pct
+            t."GapPct"              AS gap_pct,
+            t."RSI14"               AS rsi14
         FROM "FactDailyPrice" p
         JOIN "DimDate" d ON d."DateKey" = p."DateKey"
-        LEFT JOIN "FactSentiment" s
-            ON s."AssetKey" = p."AssetKey" AND s."DateKey" = p."DateKey"
         LEFT JOIN "FactStockTechnicals" t
             ON t."AssetKey" = p."AssetKey" AND t."DateKey" = p."DateKey"
         WHERE p."AssetKey" = :asset_key
@@ -110,6 +111,13 @@ def get_price_sentiment_history(ticker: str) -> dict | None:
     sector_spdr = SECTOR_TO_SPDR.get(asset["Sector"])
     prices = [_round(r["close"], 2) for r in rows]
 
+    # RSI RSI_COMPARE_BARS bars before the latest one (for the score's "RSI is
+    # recovering" check). Bars are consecutive trading days of this asset.
+    rsi_series = [r["rsi14"] for r in rows]
+    rsi_prev = (
+        rsi_series[-1 - RSI_COMPARE_BARS] if len(rsi_series) > RSI_COMPARE_BARS else None
+    )
+
     latest_price = prices[-1] if prices else None
     daily_change_pct = None
     if len(prices) >= 2 and prices[-2]:
@@ -126,7 +134,6 @@ def get_price_sentiment_history(ticker: str) -> dict | None:
         "prices": prices,
         "opens": [_round(r["open"], 2) for r in rows],
         "volumes": [r["volume"] for r in rows],
-        "sentiment": [_round(r["sentiment"], 3) for r in rows],
         "sma20": [_round(r["sma20"], 2) for r in rows],
         "sma50": [_round(r["sma50"], 2) for r in rows],
         "sma150": [_round(r["sma150"], 2) for r in rows],
@@ -137,12 +144,13 @@ def get_price_sentiment_history(ticker: str) -> dict | None:
         "atr_90d_std": _round(latest_technicals["ATR90Std"], 2) if latest_technicals else None,
         "avg_volume_20d": _round(latest_technicals["AvgVolume20D"], 0) if latest_technicals else None,
         "rsi14": _round(latest_technicals["RSI14"], 1) if latest_technicals else None,
+        "rsi14_prev": _round(rsi_prev, 1),
     }
 
 
 def build_score_kwargs(data: dict, sector_flow: dict | None, enrichment: dict | None) -> dict:
     """Assembles the exact kwargs compute_investment_score() needs, given
-    the raw ingredients (a get_price_sentiment_history() payload, a
+    the raw ingredients (a get_price_history() payload, a
     get_sector_flows() row, and an enrich_stock() result).
 
     This is the SINGLE SOURCE for that assembly - webapp/app.py's
@@ -160,16 +168,16 @@ def build_score_kwargs(data: dict, sector_flow: dict | None, enrichment: dict | 
     """
     return dict(
         closes=data["prices"],
-        volumes=data["volumes"],
         sma20_series=data["sma20"],
         sma50_series=data["sma50"],
         sma200_series=data["sma200"],
-        recent_sentiment=data["sentiment"][-SENTIMENT_LOOKBACK_DAYS:],
+        rsi14=data["rsi14"],
+        rsi14_prev=data["rsi14_prev"],
         atr14=data["atr14"],
         atr_90d_avg=data["atr_90d_avg"],
         atr_90d_std=data["atr_90d_std"],
-        avg_volume_20d=data["avg_volume_20d"],
         sector_flow_status=sector_flow["flow_status"] if sector_flow else None,
+        sector_rel_20d_pct=sector_flow["rel_20d_pct"] if sector_flow else None,
         short_percent_of_float=enrichment["short_percent_of_float"] if enrichment else None,
         has_recent_executive_sale=bool(enrichment and enrichment["has_recent_executive_sale"]),
     )
@@ -311,9 +319,39 @@ def get_sector_flows() -> list[dict]:
         WHERE r.rn = 1
         """
     )
+    relative_query = text(
+        """
+        SELECT a."Ticker", d."Date", p."Close"
+        FROM "FactDailyPrice" p
+        JOIN "DimDate" d ON d."DateKey" = p."DateKey"
+        JOIN "DimAsset" a ON a."AssetKey" = p."AssetKey"
+        WHERE a."Ticker" = ANY(:tickers) AND d."Date" >= CURRENT_DATE - INTERVAL '60 days'
+        ORDER BY a."Ticker", d."Date"
+        """
+    )
+    spx_query = text(
+        """
+        SELECT m."SP500Index"
+        FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
+        WHERE m."SP500Index" IS NOT NULL AND d."Date" >= CURRENT_DATE - INTERVAL '60 days'
+        ORDER BY d."Date"
+        """
+    )
     with get_engine().connect() as conn:
         rows = conn.execute(query, {"tickers": SECTOR_SPDR_TICKERS}).mappings().all()
         change_rows = conn.execute(change_query, {"tickers": SECTOR_SPDR_TICKERS}).mappings().all()
+        closes_rows = conn.execute(relative_query, {"tickers": SECTOR_SPDR_TICKERS}).all()
+        spx = [r[0] for r in conn.execute(spx_query)]
+
+    # 20-trading-bar return of each sector ETF minus the S&P 500's, in percentage points.
+    closes_by_ticker: dict[str, list[float]] = {}
+    for ticker, _, close in closes_rows:
+        closes_by_ticker.setdefault(ticker, []).append(close)
+    spx_ret = (spx[-1] / spx[-1 - SECTOR_RELATIVE_BARS] - 1) * 100 if len(spx) > SECTOR_RELATIVE_BARS else None
+    rel_by_ticker = {}
+    for ticker, closes in closes_by_ticker.items():
+        if spx_ret is not None and len(closes) > SECTOR_RELATIVE_BARS and closes[-1 - SECTOR_RELATIVE_BARS]:
+            rel_by_ticker[ticker] = round((closes[-1] / closes[-1 - SECTOR_RELATIVE_BARS] - 1) * 100 - spx_ret, 2)
 
     change_by_ticker = {
         r["Ticker"]: round((r["Close"] - r["prev_close"]) / r["prev_close"] * 100, 2)
@@ -329,6 +367,7 @@ def get_sector_flows() -> list[dict]:
             "volume_ratio": round(r["VolumeRatio"], 2) if r["VolumeRatio"] is not None else None,
             "flow_status": r["FlowStatus"],
             "daily_change_pct": change_by_ticker.get(r["Ticker"]),
+            "rel_20d_pct": rel_by_ticker.get(r["Ticker"]),
         }
         for r in rows
     ]
@@ -388,7 +427,7 @@ def get_top_strong_buys(limit: int = 5) -> list[dict]:
     """Top-N tickers by cached Investment Score. Refreshed by
     scripts/compute_investment_scores.py - recomputing the full score for
     every watchlist ticker live on each dashboard load (price+technicals+
-    sentiment+sector-flow joins, per ticker) would be far too slow, the same
+    sector-flow joins, per ticker) would be far too slow, the same
     reasoning get_top_movers's date-windowing already documents, just more
     so since a score is a heavier computation than a single price delta."""
     query = text(
@@ -396,7 +435,7 @@ def get_top_strong_buys(limit: int = 5) -> list[dict]:
         SELECT a."Ticker", a."CompanyName", fis."Score", fis."ComputedAt"
         FROM "FactInvestmentScore" fis
         JOIN "DimAsset" a ON a."AssetKey" = fis."AssetKey"
-        ORDER BY fis."Score" DESC
+        ORDER BY fis."Score" DESC, a."Ticker" ASC  -- exact score first, ticker only breaks a true tie
         LIMIT :limit
         """
     )
@@ -406,7 +445,8 @@ def get_top_strong_buys(limit: int = 5) -> list[dict]:
         {
             "ticker": r["Ticker"],
             "name": r["CompanyName"],
-            "score": round(r["Score"]),
+            "score": round(r["Score"], 1),  # display value; ranking uses the exact score
+            "score_exact": round(r["Score"], 4),
             "as_of": r["ComputedAt"].isoformat(),
         }
         for r in rows
@@ -424,3 +464,123 @@ def enrich_stock(ticker: str) -> dict | None:
         return None
     with get_engine().begin() as conn:
         return get_or_fetch_enrichment(conn, asset_key, ticker)
+
+
+def get_recent_news(ticker: str) -> list[dict]:
+    """The stored latest headlines that explicitly name this ticker, newest
+    first. Plain news only: no sentiment sign, score or colour is exposed
+    (news is context, not a score input). Only http(s) URLs are linked
+    (re-checked here as defence in depth)."""
+    query = text(
+        """
+        SELECT n."Title", n."SourceUrl", n."PublishedAt"
+        FROM "StockRecentNews" rn
+        JOIN "DimAsset" a ON a."AssetKey" = rn."AssetKey"
+        JOIN "NewsArticles" n ON n."ArticleID" = rn."ArticleID"
+        WHERE a."Ticker" = :ticker
+        ORDER BY rn."Rank"
+        """
+    )
+    with get_engine().connect() as conn:
+        rows = conn.execute(query, {"ticker": ticker}).mappings().all()
+    return [
+        {
+            # The " - Publisher" Google News appends is shown as the source instead.
+            "title": strip_publisher(r["Title"]),
+            "source": publisher_of(r["Title"]),
+            "url": r["SourceUrl"] if safe_http_url(r["SourceUrl"]) else None,
+            "published_at": r["PublishedAt"].isoformat(),
+        }
+        for r in rows
+    ]
+
+
+def get_market_brief() -> dict | None:
+    """Latest Daily Macro Brief, or None before the first one is generated."""
+    query = text(
+        """
+        SELECT d."Date", b."Brief", b."GeneratedAt"
+        FROM "DailyMarketBrief" b JOIN "DimDate" d ON d."DateKey" = b."DateKey"
+        ORDER BY d."Date" DESC LIMIT 1
+        """
+    )
+    with get_engine().connect() as conn:
+        row = conn.execute(query).mappings().first()
+    if row is None:
+        return None
+    return {
+        "as_of": row["Date"].isoformat(),
+        "brief": row["Brief"],
+        "generated_at": row["GeneratedAt"].isoformat(),
+    }
+
+
+def _utc(dt):
+    return dt.isoformat() if dt is not None else None
+
+
+def get_freshness() -> dict:
+    """Real timestamps (UTC ISO) for every global data source, plus the
+    schedule, so the UI can say exactly how old each thing is. A source with
+    no timestamp yet is reported as None, never guessed."""
+    from datetime import datetime, timezone
+
+    from marketpulse.schedule import (
+        describe_schedule,
+        is_overdue,
+        last_scheduled_run,
+        next_scheduled_run,
+        us_market_open,
+    )
+
+    with get_engine().connect() as conn:
+        rows = conn.execute(text('SELECT "Source", "RefreshedAt" FROM "DataFreshness"')).all()
+    stamps = {source: ts for source, ts in rows}
+    now = datetime.now(timezone.utc)
+    return {
+        "server_now": now.isoformat(),
+        "sources": {
+            s: {"refreshed_at": _utc(stamps.get(s)), "overdue": is_overdue(stamps.get(s), now)}
+            for s in ("eod_update", "prices", "news", "macro", "sector_flows", "scores", "brief")
+        },
+        "schedule": {
+            "description": describe_schedule(),
+            "last_scheduled_run": last_scheduled_run(now).isoformat(),
+            "next_scheduled_run": next_scheduled_run(now).isoformat(),
+        },
+        "market_open": us_market_open(now),
+    }
+
+
+def get_stock_freshness(asset_key: int, latest_bar_date) -> dict:
+    """Per-stock freshness for the deep-dive page."""
+    from datetime import datetime, timezone
+
+    from marketpulse.schedule import is_overdue, us_market_open
+
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT "PricesFetchedAt", "NewsFetchedAt", "TechnicalsComputedAt", "LastRefreshKind"
+                FROM "StockDataFreshness" WHERE "AssetKey" = :a
+                """
+            ),
+            {"a": asset_key},
+        ).mappings().first()
+        drivers = conn.execute(
+            text('SELECT MAX("ComputedAt") FROM "StockRecentNews" WHERE "AssetKey" = :a'), {"a": asset_key}
+        ).scalar()
+    now = datetime.now(timezone.utc)
+    prices = row["PricesFetchedAt"] if row else None
+    return {
+        "server_now": now.isoformat(),
+        "latest_bar_date": latest_bar_date.isoformat() if latest_bar_date else None,
+        "prices_fetched_at": _utc(prices),
+        "news_fetched_at": _utc(row["NewsFetchedAt"]) if row else None,
+        "technicals_computed_at": _utc(row["TechnicalsComputedAt"]) if row else None,
+        "news_panel_computed_at": _utc(drivers),
+        "last_refresh_kind": row["LastRefreshKind"] if row else None,
+        "prices_overdue": is_overdue(prices, now),
+        "market_open": us_market_open(now),
+    }

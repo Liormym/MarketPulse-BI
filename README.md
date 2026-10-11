@@ -2,13 +2,12 @@
 
 ### An AI-Powered Financial Decision Support System
 
-*Sentiment-aware, explainable stock scoring — built on a self-hosted data pipeline processing 4.5M+ historical price points across 560 tickers, at $0 infrastructure cost.*
+*Explainable, fully quantitative stock scoring — built on a self-hosted data pipeline processing 4.5M+ historical price points across 560 tickers, at $0 infrastructure cost.*
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/Flask-3.0-000000?logo=flask&logoColor=white)](https://flask.palletsprojects.com/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-D71F00)](https://www.sqlalchemy.org/)
-[![FinBERT](https://img.shields.io/badge/NLP-FinBERT-FFCA28)](https://huggingface.co/ProsusAI/finbert)
 [![Chart.js](https://img.shields.io/badge/Chart.js-4.x-FF6384?logo=chart.js&logoColor=white)](https://www.chartjs.org/)
 [![Tests](https://img.shields.io/badge/tests-140%20passing-brightgreen)](#testing)
 [![Data Scale](https://img.shields.io/badge/rows-4.5M%2B-blueviolet)](#data-engineering-at-scale)
@@ -28,7 +27,7 @@ MarketPulse BI is a **decision support system**, not a trading bot. It doesn't p
 | Market Dashboard | Stock Deep-Dive |
 |---|---|
 | ![Market Dashboard](docs/images/dashboard.png) | ![Deep Dive Dashboard](docs/images/deep_dive.png) |
-| Macro regime (10Y/2Y yields, WTI crude), sector money-flow across all 11 SPDRs, and a top-movers grid — the morning-briefing view. | Price chart with SMA overlays, a volume sub-chart, and sentiment plotted as event markers rather than a noisy bar axis. |
+| Macro regime (10Y/2Y yields, WTI crude), sector money-flow across all 11 SPDRs, and a top-movers grid — the morning-briefing view. | Price chart with SMA overlays, a volume sub-chart, the pillar-by-pillar score rationale, and the latest company headlines. |
 
 | Score Rationale Panel | Positioning & Governance |
 |---|---|
@@ -60,14 +59,12 @@ flowchart TD
     end
 
     subgraph AI["🧠 Intelligence Layer"]
-        FB["FinBERT<br/>Sentiment Engine"]
-        SCORE["Explainable Scoring Engine<br/>0–100, dynamically normalized"]
+        SCORE["Explainable Scoring Engine<br/>0–100, pure quantitative"]
         PAT["Pattern Detection<br/>SciPy Heuristics"]
     end
 
     subgraph DB["🗄️ PostgreSQL — Star Schema"]
         FACT[("FactDailyPrice<br/>4.5M+ rows · 1962 → present")]
-        SENT[("FactSentiment<br/>confidence-weighted")]
         TECH[("FactStockTechnicals<br/>SMA / ATR / Volume")]
     end
 
@@ -80,10 +77,8 @@ flowchart TD
     RSS --> EX
     EX --> VAL --> TR
     TR --> FACT
-    TR --> FB --> SENT
     FACT --> TECH
     FACT --> SCORE
-    SENT --> SCORE
     TECH --> SCORE
     FACT --> PAT
     SCORE --> API
@@ -92,7 +87,7 @@ flowchart TD
     API --> UI
 ```
 
-**Star schema**: `DimAsset`, `DimDate`, `FactDailyPrice`, `FactSentiment`, `FactStockTechnicals`, `FactSectorVolume`, `MacroIndicators`, plus governance tables (`InsiderTransactions`, `StockEnrichmentCache`) and operational logging (`PipelineExecutionLog`, `DataQualityResults`). Full column-level definitions in [`db/migrations/`](db/migrations/).
+**Star schema**: `DimAsset`, `DimDate`, `FactDailyPrice`, `FactStockTechnicals`, `FactSectorVolume`, `MacroIndicators`, plus governance tables (`InsiderTransactions`, `StockEnrichmentCache`) and operational logging (`PipelineExecutionLog`, `DataQualityResults`). Full column-level definitions in [`db/migrations/`](db/migrations/). (`FactSentiment` and the `vw_*Sentiment*` BI views are a frozen legacy: nothing writes to them any more, they only hold history from before sentiment was removed.)
 
 ---
 
@@ -100,28 +95,27 @@ flowchart TD
 
 ### 🧮 Explainable AI Scoring — not a black box
 
-Every Investment Score is built from four named, weighted buckets that sum to exactly 100 in the maximally-bullish case:
+The Investment Score (v2) is **100% quantitative: no news, no sentiment**. It is a **diagnostic snapshot of current technical and sector alignment, not a forecast and not investment advice** (a point-in-time backtest of the earlier, sentiment-based version found no predictive power; v2 makes no claim to have changed that). Three pillars sum to exactly 100, applied identically to every stock:
 
-| Bucket | Range | Signal |
+| Pillar | Max | What it measures |
 |---|---|---|
-| **Sentiment** | 0 → 30 | Confidence-weighted FinBERT average over the trailing 14 days |
-| **Technical** | 0 → 40 | Price vs. SMA-50/200, SMA-20 > SMA-50 crossover, Seller-Exhaustion bonus |
-| **Positioning & Macro** | −10 → 30 | Sector money-flow (Accumulation/Distribution) + a dynamic Short-Interest rule |
-| **Risk Modifiers** | −30 → 0 | ATR volatility penalty, CEO/CFO insider-selling penalty (90-day lookback) |
+| **1. Trend & Moving Averages** | 45 | Price vs SMA-20 (10), SMA-50 (10), SMA-200 (10), and SMA-50 vs SMA-200 alignment (15) |
+| **2. Momentum & RSI-14 regime** | 30 | Healthy bullish RSI (about 55-65) scores highest, neutral RSI moderate, oversold-and-recovering is rewarded, overbought (above 70) is progressively penalised so stretched stocks cannot reach 80+ |
+| **3. Sector & Risk/Short profile** | 25 | Sector money-flow (10) + sector 20-day performance vs the S&P 500 (5) + short interest (5) + volatility vs its own history (3) + CEO/CFO selling (2) |
 
-**Dynamic Normalization**: most tickers have no recent news at all — without a fix, that structurally caps their score at 70 and makes "Strong Buy" nearly unreachable for the majority of the universe. When there's no scored sentiment in the window, the Technical + Positioning base is rescaled from its 70-point ceiling up to a full /100 *before* risk modifiers are applied — so a thin news cycle no longer silently punishes a stock's ceiling.
+**Graded, not binary.** Each moving-average rule is a smooth ramp: half the points when price sits exactly on the average, full a "band" above it, zero a band below. A stock with no edge lands mid-scale in every pillar (a perfectly neutral stock scores about 50-58), and missing data counts as neutral and says so, never as bad.
 
-Every rule that fires — bonus or penalty — appends a line to a live audit trail:
+Every rule appends a line to the audit trail, grouped by pillar, with points earned out of points possible:
 
 ```
-+15 pts: Price above 200-day SMA
-+10 pts: 20-day SMA above 50-day SMA (short-term uptrend)
-+5 pts:  Seller exhaustion detected (down-days on below-average volume)
--20 pts: CEO/CFO insider selling in the last 90 days
-Score normalized: no recent news, so the 25.0/70-point base is scaled to /100 (35.7)
+Trend & Moving Averages: 31.4 / 45 pts
+  7.3 / 10 pts: Price +2.1% vs 20-day SMA (half points on the average, full at +3%, zero at -3%)
+  ...
+Momentum & RSI-14: 30.0 / 30 pts
+  30.0 / 30 pts: RSI-14 is 61.2: healthy bullish momentum range (45-65)
 ```
 
-A **"Sell the News Risk"** flag layers on top, purely informational: it fires when sentiment is very high *and* the stock is already technically overextended (price >10% above its 20-day SMA, or volume climaxing) — a warning that a news-driven pop may already be exhausted, without touching the score itself.
+Bands shown in the UI are diagnostic labels: **70+ Strong Signal, 45-69 Neutral / Mixed, below 45 Weak Signal**. `scripts/evaluate_score_ic.py` (run weekly) measures whether the score has actually preceded outperformance, at 5, 20 and 60 trading days with per-pillar attribution; it reports "INSUFFICIENT DATA" rather than a number until enough history exists.
 
 ### 📊 Data Engineering at Scale
 
@@ -151,7 +145,7 @@ These render as a dashed "Technical Observation" badge — a nudge to look close
 
 The stock deep-dive also shows **RSI (14-day, Wilder)** in the Technical & Risk panel — green "Oversold" below 30, red "Overbought" above 70 — and a **Fundamentals** panel with trailing P/E, market cap and beta. RSI is computed nightly with the other technicals from price history already in the database; the three fundamentals come from the same `yfinance` `Ticker.info` call already used for short interest and are cached for 24 hours (`n/a` means Yahoo has no value, e.g. no P/E for a loss-making company; `—` means nothing has been fetched yet). **None of these feed the Investment Score** — like the pattern hints, they are context for the reader, not a scoring input.
 
-The price chart opens with **only the price line** visible; SMA 20/50/150/200 and Sentiment stay in the legend (struck through) and toggle on with a click. Your choices persist while you switch timeframes or tickers.
+The price chart opens with **only the price line** visible; SMA 20/50/150/200 stay in the legend (struck through) and toggle on with a click. Your choices persist while you switch timeframes or tickers.
 
 ---
 
@@ -162,7 +156,6 @@ The price chart opens with **only the price line** visible; SMA 20/50/150/200 an
 | Language | Python 3.11 |
 | Web Framework | Flask 3.0 |
 | Database | PostgreSQL 16 (star schema, via SQLAlchemy 2.0) |
-| NLP | FinBERT (`ProsusAI/finbert`, via 🤗 Transformers + PyTorch) |
 | Market Data | `yfinance` |
 | News | Yahoo Finance & Google News RSS (`feedparser`) |
 | Scientific Computing | `scipy`, `pandas`, `numpy` |
@@ -218,9 +211,7 @@ PYTHONPATH=src python scripts/compute_sector_flows.py
 PYTHONPATH=src python scripts/fetch_macro_indicators.py
 ```
 
-> First run downloads the FinBERT model (~440MB) from Hugging Face; later runs reuse the cached weights.
-
-### 5. Run the data pipeline (prices, news, sentiment)
+### 5. Run the data pipeline (prices and news)
 
 ```bash
 PYTHONPATH=src python -m marketpulse.pipeline
@@ -243,10 +234,19 @@ A quantitative system is only as trustworthy as its most stale input. Sector flo
 `scripts/run_daily_update.py` is the single entry point that runs the full refresh in the dependency order that actually matters:
 
 1. **Fetch macro indicators** (`fetch_macro_indicators.py`) — yields, oil, Bitcoin, KOSPI, S&P 500, NASDAQ, RSP
-2. **Fetch fresh prices, news & sentiment** (`python -m marketpulse.pipeline`) — the trailing-window daily pipeline, not the one-time full backfill
+2. **Fetch fresh prices & news** (`python -m marketpulse.pipeline`) — the trailing-window daily pipeline, not the one-time full backfill
 3. **Recompute technicals** (`compute_stock_technicals.py`) — SMA/ATR/gap, from step 2's prices
 4. **Compute sector flows** (`compute_sector_flows.py`) — Accumulation/Distribution/Neutral, from step 2's prices
 5. **Compute Investment Scores** (`compute_investment_scores.py`) — from steps 2–4's output
+6. **Generate the Daily Macro Brief** (`generate_market_brief.py`) — a deterministic, rule-based 1–2 sentence market summary (index move, 10Y yield, sector leaders/laggards, oil, breadth) stored in `DailyMarketBrief` with the facts behind it; no LLM or external API. Shown at the top of the dashboard.
+
+### How fresh is the data?
+
+Nothing in the UI is "live" unless you ask for it. The scheduled update (09:00, 15:00 and 23:00 Israel time, daily) is the baseline: prices are the last **close**, so while the US market is open the scheduled numbers are the previous day's. On a stock page, **Refresh Data** re-fetches that one stock from Yahoo Finance at that moment (price is Yahoo's feed, delayed up to ~15 minutes while the market is open; limited to 5 per hour per visitor).
+
+Every screen shows when its data was really fetched or computed, as a timestamp in the viewer's timezone plus a live age ("2 h 10 min ago"), taken from `DataFreshness` / `StockDataFreshness` (migration `009`): a dashboard strip with the last fully successful EOD update and the next scheduled run (and per-source times under *Details*), a badge on each dashboard section, and on every stock page a price line under the name plus a *Data Freshness* table (prices, news, technicals, fundamentals, drivers; the Investment Score is computed live on page load). A timestamp advances only after its fetch succeeded (a failed feed never makes data look fresh), and turns amber when a scheduled run has happened since (`marketpulse/schedule.py`).
+
+Step 2 also stores each ticker's **Recent Company News**: up to 4 of the latest headlines that explicitly name the company or ticker (publisher bylines ignored, head-to-head comparisons dropped), newest first, shown as plain linked headlines with their date. News is context only: it is not an input to the Investment Score, and no sentiment score or red/green colouring is shown. There is no sentiment model anywhere in the system: FinBERT, PyTorch and Transformers were removed, which is why the Docker images are small and the cluster pods need little memory.
 
 It stops at the first failing step rather than pressing on with partial data:
 
@@ -256,11 +256,11 @@ PYTHONPATH=src python scripts/run_daily_update.py
 
 ### Score history
 
-Step 5 also appends every ticker's score to `FactInvestmentScoreHistory` (one row per asset per price bar, with the point breakdown, flags, the bar's close, and whether sentiment was available). `FactInvestmentScore` stays the single "latest score" cache the dashboard reads; the history table is what lets you ask whether high scores actually preceded gains, measured on real scores instead of ones reconstructed afterwards. Re-running on the same bar rewrites that row rather than duplicating it. History starts on the first run after migration `006` is applied, so a meaningful forward test needs a few months to accumulate.
+Step 5 also appends every ticker's score to `FactInvestmentScoreHistory` (one row per asset per price bar, with the four pillar scores, flags, RSI and the bar's close). `FactInvestmentScore` stays the single "latest score" cache the dashboard reads; the history table is what lets you ask whether high scores actually preceded gains, measured on real scores instead of ones reconstructed afterwards. Re-running on the same bar rewrites that row rather than duplicating it. History starts on the first run after migration `006` is applied, so a meaningful forward test needs a few months to accumulate.
 
 ### Running it automatically
 
-`scripts/scheduler.py` is a small `schedule`-based daemon that triggers the update above at **23:10** every US market weekday (30 minutes after the market close CronJob window used elsewhere in this repo). Each firing runs the orchestrator as a subprocess, so a failed pipeline run can't crash the daemon itself — it just logs the failure and waits for the next weekday.
+The full update runs **three times a day, every day: 09:00, 15:00 and 23:00 Israel time** (`marketpulse/schedule.py` is the one definition; the k8s CronJob and the dev daemon both follow it, and a test keeps them in sync). In New York time that is roughly 02:00 (after the close, writes the *final* daily bar), 08:00 (pre-market) and 16:00 (the closing bell, so that day's bar may still be provisional until the 09:00 run). Weekends are included so news and Bitcoin stay fresh. `scripts/scheduler.py` is a small daemon that triggers it for a single dev machine; each firing runs the orchestrator as a subprocess, so a failed run can't crash the daemon, and a run that overruns a slot skips it rather than overlapping.
 
 Start it in the background and leave it running (e.g. in `tmux`/`screen`, or with `nohup`):
 
@@ -277,10 +277,10 @@ PYTHONPATH=src nohup python scripts/scheduler.py > scheduler.log 2>&1 &
 **For a production deployment, prefer `cron` (or the `k8s/eod-update-cronjob.yaml` CronJob already in this repo) over a long-lived Python daemon** — a scheduler process is one more thing that can silently die on a dev machine. The equivalent crontab entry:
 
 ```cron
-10 23 * * 1-5 cd /path/to/MarketPulseAI && PYTHONPATH=src /path/to/.venv/bin/python scripts/run_daily_update.py >> /var/log/marketpulse-eod.log 2>&1
+0 9,15,23 * * * cd /path/to/MarketPulseAI && PYTHONPATH=src /path/to/.venv/bin/python scripts/run_daily_update.py >> /var/log/marketpulse-eod.log 2>&1
 ```
 
-`10 23 * * 1-5` reads as: minute 10, hour 23, every day-of-month, every month, weekdays 1–5 (Monday–Friday) — the same schedule `scheduler.py` runs on.
+`0 9,15,23 * * *` reads as: minute 0 of hours 9, 15 and 23, every day (run it on a machine whose clock is set to Israel time, or use the k8s CronJob, which carries `timeZone: Asia/Jerusalem`).
 
 ---
 
@@ -291,16 +291,16 @@ PYTHONPATH=src pytest                          # everything, against your local 
 PYTHONPATH=src pytest -m "not populated_db"    # what CI runs: no backfilled market data needed
 ```
 
-140 tests covering the scoring engine (every rule in isolation, plus fuzz-tested bounds), the sentiment pipeline, technical indicator math (SMA/ATR/RSI), pattern detection heuristics, the rate limiter and its shared outbound limiter, production-config fail-fast, the EOD orchestrator's stop-on-failure behaviour, and idempotent-upsert integration tests against a real local Postgres instance. Five tests are marked `populated_db`: they need real backfilled prices and live Yahoo access, so CI (which only has a freshly migrated, seeded database) deselects them.
+140 tests covering the scoring engine (every rule in isolation, plus fuzz-tested bounds), the news filter, technical indicator math (SMA/ATR/RSI), pattern detection heuristics, the rate limiter and its shared outbound limiter, production-config fail-fast, the EOD orchestrator's stop-on-failure behaviour, and idempotent-upsert integration tests against a real local Postgres instance. Five tests are marked `populated_db`: they need real backfilled prices and live Yahoo access, so CI (which only has a freshly migrated, seeded database) deselects them.
 
 ## Container Images & CI
 
 `.github/workflows/ci.yml` runs on every push and pull request:
 
 1. **test** — migrates and seeds a Postgres 16 service container, then runs `pytest -m "not populated_db"`.
-2. **images** — builds `docker/webapp.Dockerfile` and `docker/pipeline.Dockerfile` for `linux/amd64`, smoke-tests each (runs as UID 10001, CPU-only torch, FinBERT loads with `--network none`, the webapp boots in production mode and answers `/health`), and on pushes pushes them to GHCR as `ghcr.io/<owner>/marketpulse-{webapp,pipeline}:sha-<short>-amd64` (plus `main-amd64` on the default branch).
+2. **images** — builds `docker/webapp.Dockerfile` and `docker/pipeline.Dockerfile` for `linux/amd64`, smoke-tests each (runs as UID 10001 with `--network none`, the webapp boots in production mode and answers `/health`), and on pushes pushes them to GHCR as `ghcr.io/<owner>/marketpulse-{webapp,pipeline}:sha-<short>-amd64` (plus `main-amd64` on the default branch).
 
-Both images are multi-stage, pin the Python base image by digest, install CPU-only PyTorch (no CUDA libraries), and bake FinBERT into `HF_HOME=/opt/hf-cache` with network model lookups disabled at runtime. To build locally on Apple silicon for the cluster's architecture:
+Both images are multi-stage, pin the Python base image by digest, and carry no ML stack (no PyTorch / Transformers / model weights), so they are small and start fast. To build locally on Apple silicon for the cluster's architecture:
 
 ```bash
 docker build --platform linux/amd64 -f docker/webapp.Dockerfile -t marketpulse-webapp .
@@ -315,9 +315,9 @@ When bumping the Python base image, change the tag **and** digest together in bo
 ```
 src/marketpulse/       Core pipeline & domain logic
 ├── extract/            yfinance + RSS ingestion
-├── sentiment/           FinBERT scoring
+├── news_relevance.py    which headlines are about which stock
 ├── load/                 Idempotent upserts
-├── scoring.py             Explainable Investment Score engine
+├── scoring.py             Explainable Investment Score engine (v2: trend, momentum, sector/risk)
 ├── technicals.py           SMA / ATR / volume computation
 ├── sector_flow.py            Sector Accumulation/Distribution classification
 ├── pattern_detection.py       SciPy chart-pattern heuristics
@@ -354,7 +354,7 @@ flowchart LR
         end
 
         subgraph Scheduled["Scheduled — CronJob"]
-            CJ["CronJob<br/>marketpulse-eod-update<br/>17:30 ET weekdays"]
+            CJ["CronJob<br/>marketpulse-eod-update<br/>09:00 / 15:00 / 23:00 Israel"]
         end
 
         SS[("StatefulSet<br/>postgres + PVC")]
@@ -384,14 +384,14 @@ The rate limiter's state lives in a **signed session cookie on the client**, not
 
 | Workload | Kubernetes Kind | Schedule | Why |
 |---|---|---|---|
-| EOD update (`scripts/run_daily_update.py`: macro → prices/news/sentiment → technicals → sector flow → scores) | `CronJob` → `Job` → `Pod` | `30 17 * * 1-5` in `America/New_York` (90 min after the close) | One dependency-ordered run that stops at the first failed step, so no step ever computes on stale upstream data |
+| EOD update (`scripts/run_daily_update.py`: macro → prices/news → technicals → sector flow → scores → macro brief) | `CronJob` → `Job` → `Pod` | `0 9,15,23 * * *` in `Asia/Jerusalem` (three times a day) | One dependency-ordered run that stops at the first failed step, so no step ever computes on stale upstream data |
 | `period=max` historical backfill, S&P 500 constituent refresh | one-shot `Job` (`kubectl create job --from=cronjob/...`) | On-demand | These are onboarding/rebalancing operations, not a recurring schedule — modeled honestly as one-time Jobs rather than forced into a CronJob that would mostly no-op |
 
 Every write path (`ON CONFLICT` upserts throughout) is safe to re-run, which is precisely what makes the `CronJob → Job → Pod` model viable in the first place — a missed or doubled run on a flaky node is a non-event.
 
 ### Configuration: `ConfigMaps` and `Secrets`, kept strictly separate
 
-[`k8s/configmap.yaml`](k8s/configmap.yaml) holds everything safe to read in plaintext (watchlist path, outbound request rate and worker counts, the FinBERT model id, DB host/port, `APP_ENV`). [`k8s/secrets.example.yaml`](k8s/secrets.example.yaml) holds exactly two things: DB credentials and the Flask session-signing key — nothing else ever lives there. Every workload composes both via `envFrom`, so adding a new non-secret setting never means editing three YAML files. With `APP_ENV=production` the webapp and the EOD job refuse to start while any secret is still a placeholder.
+[`k8s/configmap.yaml`](k8s/configmap.yaml) holds everything safe to read in plaintext (watchlist path, outbound request rate and worker counts, DB host/port, `APP_ENV`). [`k8s/externalsecrets.yaml`](k8s/externalsecrets.yaml) pulls the secrets (DB credentials, Flask session-signing key, backup bucket keys) from AWS Secrets Manager via the External Secrets Operator — no secret value is ever in Git. Every workload composes both via `envFrom`, so adding a new non-secret setting never means editing three YAML files. With `APP_ENV=production` the webapp and the EOD job refuse to start while any secret is still a placeholder.
 
 ### Built for observability
 
@@ -402,19 +402,14 @@ Every write path (`ON CONFLICT` upserts throughout) is safe to re-run, which is 
 ### Bringing it up
 
 ```bash
-kubectl apply -f k8s/00-namespace.yaml
-kubectl apply -f k8s/configmap.yaml
-kubectl apply -f k8s/secrets.yaml            # copy from secrets.example.yaml first, never commit the real one
-kubectl apply -f k8s/postgres-statefulset.yaml
-kubectl apply -f k8s/eod-update-cronjob.yaml
-kubectl apply -f k8s/webapp-deployment.yaml
+kubectl apply -k k8s/     # see k8s/README.md for prerequisites (ingress-nginx, cert-manager, ESO) and the deploy runbook
 ```
 
 ---
 
 ## Out of Scope
 
-No algorithmic trading, no real-time streaming (batch/on-demand only), no Kafka/Spark, no FinBERT fine-tuning, no cloud spend — the entire system runs locally at **$0** infrastructure cost.
+No algorithmic trading, no real-time streaming (batch/on-demand only), no Kafka/Spark, no cloud spend — the entire system runs locally at **$0** infrastructure cost.
 
 ---
 

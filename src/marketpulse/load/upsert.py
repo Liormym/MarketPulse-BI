@@ -7,6 +7,8 @@ from datetime import date, datetime
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+from ..recent_news import safe_http_url
+
 
 def get_asset_key_map(conn: Connection) -> dict[str, int]:
     rows = conn.execute(text('SELECT "Ticker", "AssetKey" FROM "DimAsset"')).all()
@@ -53,11 +55,10 @@ def upsert_news_articles(conn: Connection, scored_articles, asset_keys: dict[str
             text(
                 """
                 INSERT INTO "NewsArticles"
-                    ("ArticleID", "AssetKey", "PublishedAt", "Title", "SentimentCategory", "SentimentScore")
-                VALUES (:article_id, :asset_key, :published_at, :title, :category, :score)
+                    ("ArticleID", "AssetKey", "PublishedAt", "Title", "SourceUrl")
+                VALUES (:article_id, :asset_key, :published_at, :title, :source_url)
                 ON CONFLICT ("ArticleID") DO UPDATE
-                    SET "SentimentCategory" = EXCLUDED."SentimentCategory",
-                        "SentimentScore" = EXCLUDED."SentimentScore"
+                    SET "SourceUrl" = COALESCE(EXCLUDED."SourceUrl", "NewsArticles"."SourceUrl")
                 """
             ),
             {
@@ -65,40 +66,7 @@ def upsert_news_articles(conn: Connection, scored_articles, asset_keys: dict[str
                 "asset_key": asset_key,
                 "published_at": a.published_at,
                 "title": a.title,
-                "category": a.category,
-                "score": a.score,
-            },
-        )
-        count += 1
-    return count
-
-
-def upsert_daily_sentiment(conn: Connection, daily_records, asset_keys: dict[str, int]) -> int:
-    count = 0
-    for d in daily_records:
-        asset_key = asset_keys.get(d.ticker)
-        if asset_key is None:
-            continue
-        conn.execute(
-            text(
-                """
-                INSERT INTO "FactSentiment"
-                    ("AssetKey", "DateKey", "ArticleCount", "PositiveCount", "NegativeCount", "AvgSentimentScore")
-                VALUES (:asset_key, :date_key, :article_count, :positive_count, :negative_count, :avg_score)
-                ON CONFLICT ("AssetKey", "DateKey") DO UPDATE
-                    SET "ArticleCount" = EXCLUDED."ArticleCount",
-                        "PositiveCount" = EXCLUDED."PositiveCount",
-                        "NegativeCount" = EXCLUDED."NegativeCount",
-                        "AvgSentimentScore" = EXCLUDED."AvgSentimentScore"
-                """
-            ),
-            {
-                "asset_key": asset_key,
-                "date_key": int(d.trade_date.strftime("%Y%m%d")),
-                "article_count": d.article_count,
-                "positive_count": d.positive_count,
-                "negative_count": d.negative_count,
-                "avg_score": d.avg_sentiment_score,
+                "source_url": safe_http_url(getattr(a, "source_url", None)),
             },
         )
         count += 1
@@ -106,12 +74,14 @@ def upsert_daily_sentiment(conn: Connection, daily_records, asset_keys: dict[str
 
 
 def upsert_investment_score_history(conn: Connection, rows: list[dict]) -> int:
-    """Writes one FactInvestmentScoreHistory row per (asset, price bar).
-    Re-scoring the same bar (a weekend or holiday re-run, or a retry) rewrites
-    that row rather than adding a duplicate. Each row needs: asset_key,
-    date_key, score, sentiment_points, technical_points, positioning_points,
-    risk_modifier_points, close_price, short_percent_of_float, has_sentiment,
-    flags (dict), computed_at."""
+    """Writes one FactInvestmentScoreHistory row per (asset, price bar), as a
+    score-v2 row. Re-scoring the same bar (a weekend or holiday re-run, or a
+    retry) rewrites that row rather than adding a duplicate; if the bar still
+    holds a v1 (sentiment-based) row it is replaced by the v2 one and the v1-only
+    columns are cleared, so a row never mixes versions. Each row needs:
+    asset_key, date_key, score, trend_points, momentum_points, sector_points,
+    risk_points, rsi14, close_price, short_percent_of_float, flags (dict),
+    computed_at."""
     if not rows:
         return 0
     payload = [{**row, "flags": json.dumps(row["flags"], sort_keys=True)} for row in rows]
@@ -119,21 +89,27 @@ def upsert_investment_score_history(conn: Connection, rows: list[dict]) -> int:
         text(
             """
             INSERT INTO "FactInvestmentScoreHistory"
-                ("AssetKey", "DateKey", "Score", "SentimentPoints", "TechnicalPoints", "PositioningPoints",
-                 "RiskModifierPoints", "ClosePrice", "ShortPercentOfFloat", "HasSentiment", "Flags", "ComputedAt")
+                ("AssetKey", "DateKey", "Score", "ScoreVersion", "TrendPoints", "MomentumPoints",
+                 "SectorPoints", "RiskPoints", "RSI14", "ClosePrice", "ShortPercentOfFloat", "Flags", "ComputedAt")
             VALUES
-                (:asset_key, :date_key, :score, :sentiment_points, :technical_points, :positioning_points,
-                 :risk_modifier_points, :close_price, :short_percent_of_float, :has_sentiment,
+                (:asset_key, :date_key, :score, 2, :trend_points, :momentum_points,
+                 :sector_points, :risk_points, :rsi14, :close_price, :short_percent_of_float,
                  CAST(:flags AS JSONB), :computed_at)
             ON CONFLICT ("AssetKey", "DateKey") DO UPDATE
                 SET "Score" = EXCLUDED."Score",
-                    "SentimentPoints" = EXCLUDED."SentimentPoints",
-                    "TechnicalPoints" = EXCLUDED."TechnicalPoints",
-                    "PositioningPoints" = EXCLUDED."PositioningPoints",
-                    "RiskModifierPoints" = EXCLUDED."RiskModifierPoints",
+                    "ScoreVersion" = 2,
+                    "TrendPoints" = EXCLUDED."TrendPoints",
+                    "MomentumPoints" = EXCLUDED."MomentumPoints",
+                    "SectorPoints" = EXCLUDED."SectorPoints",
+                    "RiskPoints" = EXCLUDED."RiskPoints",
+                    "RSI14" = EXCLUDED."RSI14",
+                    "SentimentPoints" = NULL,
+                    "TechnicalPoints" = NULL,
+                    "PositioningPoints" = NULL,
+                    "RiskModifierPoints" = NULL,
+                    "HasSentiment" = NULL,
                     "ClosePrice" = EXCLUDED."ClosePrice",
                     "ShortPercentOfFloat" = EXCLUDED."ShortPercentOfFloat",
-                    "HasSentiment" = EXCLUDED."HasSentiment",
                     "Flags" = EXCLUDED."Flags",
                     "ComputedAt" = EXCLUDED."ComputedAt"
             """

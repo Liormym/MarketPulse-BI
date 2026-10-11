@@ -1,6 +1,6 @@
 # Two Ingresses for one host. ingress-nginx rate-limit annotations apply to a
 # whole Ingress, so the refresh route needs its own: it is the only endpoint
-# that triggers outbound Yahoo/FinBERT work, and it is public.
+# that triggers outbound Yahoo/news-feed work, and it is public.
 #
 # TODO before applying: replace marketpulse.example.com (3 places) with your host.
 #

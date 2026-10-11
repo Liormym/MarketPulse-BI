@@ -11,7 +11,7 @@ let currentData = null; // full, unfiltered dataset from the API
 let currentRange = "1Y";
 
 // Which chart series are shown. Only the price line is visible on first load;
-// SMAs and Sentiment stay in the legend (struck through) and toggle on by click.
+// SMAs stay in the legend (struck through) and toggle on by click.
 // Tracked here instead of relying on Chart.js's per-dataset state because
 // renderChart() swaps in brand-new dataset objects on every timeframe/ticker
 // change, which would otherwise reset the user's toggles.
@@ -21,12 +21,11 @@ const DEFAULT_SERIES_VISIBLE = {
   "SMA 50": false,
   "SMA 150": false,
   "SMA 200": false,
-  "Sentiment": false,
 };
 const seriesVisible = { ...DEFAULT_SERIES_VISIBLE };
 
 const RANGE_DAYS = { "1M": 30, "6M": 182, "1Y": 365, "5Y": 365 * 5 };
-const SERIES_KEYS = ["dates", "prices", "opens", "volumes", "sentiment", "sma20", "sma50", "sma150", "sma200", "gap_pct"];
+const SERIES_KEYS = ["dates", "prices", "opens", "volumes", "sma20", "sma50", "sma150", "sma200", "gap_pct"];
 const SHORT_TERM_POINT_COUNT = { "5D": 5 };
 
 function filterByRange(data, range) {
@@ -109,9 +108,12 @@ function formatVolume(v) {
   return String(v);
 }
 
+const SCORE_DISCLAIMER =
+  "The score is a diagnostic snapshot of current technical and sector alignment (trend, momentum, sector flow, risk). It is not a forecast and not investment advice.";
+
 function scoreBand(score) {
-  if (score >= 70) return { band: "good", tag: "Strong Buy Signal" };
-  if (score >= 45) return { band: "warn", tag: "Neutral / Watch" };
+  if (score >= 70) return { band: "good", tag: "Strong Signal" };
+  if (score >= 45) return { band: "warn", tag: "Neutral / Mixed" };
   return { band: "bad", tag: "Weak Signal" };
 }
 
@@ -126,9 +128,9 @@ function renderScore(score, detail) {
   }
 
   const { band, tag } = scoreBand(score);
-  scoreValueEl.textContent = score;
+  scoreValueEl.textContent = Number(score).toFixed(1);
   scoreTagEl.textContent = tag;
-  scoreTagEl.title = "";
+  scoreTagEl.title = SCORE_DISCLAIMER;
   scoreCardEl.classList.add(`score-${band}`);
 }
 
@@ -155,31 +157,8 @@ function smaDataset(label, data, color) {
   };
 }
 
-function sentimentMarkerDataset(data) {
-  // Sentiment is sporadic (news doesn't happen every day), so instead of a
-  // bar sub-axis where most days are just empty space, plot it as colored
-  // dot markers sitting directly on the price line for the days it exists -
-  // prominent regardless of how sparse the underlying data is.
-  const points = data.prices.map((p, i) => (data.sentiment[i] != null ? p : null));
-  const colors = data.sentiment.map((s) => (s == null ? "transparent" : s >= 0 ? "#16f2a3" : "#ff4d6a"));
-  const radii = data.sentiment.map((s) => (s == null ? 0 : 6));
-  return {
-    type: "line",
-    label: "Sentiment",
-    data: points,
-    showLine: false,
-    pointRadius: radii,
-    pointHoverRadius: radii.map((r) => (r ? r + 2 : 0)),
-    pointBackgroundColor: colors,
-    pointBorderColor: "#090b10",
-    pointBorderWidth: 1.5,
-    yAxisID: "yPrice",
-    order: 0,
-  };
-}
-
 function renderChart(data) {
-  const ctx = document.getElementById("price-sentiment-chart").getContext("2d");
+  const ctx = document.getElementById("price-chart").getContext("2d");
 
   const config = {
     data: {
@@ -204,7 +183,6 @@ function renderChart(data) {
         smaDataset("SMA 50", data.sma50, "rgba(123, 92, 255, 0.9)"),
         smaDataset("SMA 150", data.sma150, "rgba(22, 242, 163, 0.7)"),
         smaDataset("SMA 200", data.sma200, "rgba(255, 77, 106, 0.7)"),
-        sentimentMarkerDataset(data),
       ].map((ds) => ({ ...ds, hidden: !seriesVisible[ds.label] })),
     },
     options: {
@@ -231,14 +209,8 @@ function renderChart(data) {
           bodyFont: { family: "'JetBrains Mono', monospace" },
           titleFont: { family: "'JetBrains Mono', monospace" },
           padding: 10,
-          filter: (item) => !(item.dataset.label === "Sentiment" && data.sentiment[item.dataIndex] == null),
           callbacks: {
-            label: (item) => {
-              if (item.dataset.label === "Sentiment") {
-                return `Sentiment: ${data.sentiment[item.dataIndex].toFixed(2)}`;
-              }
-              return `${item.dataset.label}: $${item.formattedValue}`;
-            },
+            label: (item) => `${item.dataset.label}: $${item.formattedValue}`,
           },
         },
       },
@@ -399,7 +371,8 @@ function renderFundamentalsPanel(fundamentals) {
   mcapEl.textContent = formatMarketCap(f.market_cap) || missing;
   betaEl.textContent = f.beta != null ? f.beta.toFixed(2) : missing;
   betaEl.title = f.beta == null && fetched ? "Beta not reported for this instrument" : "Sensitivity to the overall market: 1.0 moves with it, above 1 swings harder";
-  asOfEl.textContent = fetched ? `Yahoo Finance · updated ${new Date(f.as_of).toLocaleDateString()}` : "";
+  if (fetched) Freshness.stamp(asOfEl, f.as_of, { label: "Yahoo Finance · updated" });
+  else asOfEl.textContent = "";
 }
 
 function fmt(value) {
@@ -467,11 +440,11 @@ function renderMacroAlignmentPanel(sectorFlow) {
 
 const FLAG_BADGES = {
   short_squeeze_setup: { label: "🚀 Short Squeeze Setup", cls: "bullish" },
-  seller_exhaustion: { label: "💪 Seller Exhaustion", cls: "bullish" },
+  oversold_recovery: { label: "↗ Oversold Recovery", cls: "bullish" },
+  overbought_rsi: { label: "🔥 Overbought RSI", cls: "warn" },
   bearish_conviction: { label: "🐻 Bearish Conviction", cls: "bearish" },
   high_volatility: { label: "⚡ High Volatility", cls: "warn" },
   insider_selling: { label: "⚠ Insider Selling", cls: "bearish" },
-  sell_the_news_risk: { label: "📉 Sell the News Risk", cls: "warn" },
 };
 
 function renderScoreRationale(scoreDetail) {
@@ -479,47 +452,178 @@ function renderScoreRationale(scoreDetail) {
   const subscoresEl = document.getElementById("score-subscores");
   const trailEl = document.getElementById("audit-trail");
 
-  if (!scoreDetail || scoreDetail.audit_trail === undefined) {
-    badgesEl.innerHTML = "";
-    subscoresEl.innerHTML = "";
-    trailEl.innerHTML = '<li class="empty-state" style="background:none;border:none;">No score rationale available</li>';
+  if (!scoreDetail || !scoreDetail.pillars) {
+    badgesEl.replaceChildren();
+    subscoresEl.replaceChildren();
+    trailEl.replaceChildren();
+    const li = document.createElement("li");
+    li.className = "empty-state";
+    li.style.cssText = "background:none;border:none;";
+    li.textContent = (scoreDetail && scoreDetail.reason) || "No score rationale available";
+    trailEl.appendChild(li);
     return;
   }
 
   const flags = scoreDetail.flags || {};
-  const badgeKeys = Object.keys(flags).filter((k) => flags[k]);
-  badgesEl.innerHTML = badgeKeys.length
-    ? badgeKeys
-        .map((k) => {
-          const b = FLAG_BADGES[k] || { label: k, cls: "warn" };
-          return `<span class="score-badge ${b.cls}">${b.label}</span>`;
-        })
-        .join("")
-    : "";
+  badgesEl.replaceChildren(
+    ...Object.keys(flags)
+      .filter((k) => flags[k])
+      .map((k) => {
+        const b = FLAG_BADGES[k] || { label: k, cls: "warn" };
+        const span = document.createElement("span");
+        span.className = `score-badge ${b.cls}`;
+        span.textContent = b.label;
+        return span;
+      })
+  );
 
-  const subscores = [
-    ["Sentiment", scoreDetail.sentiment_points],
-    ["Technical", scoreDetail.technical_points],
-    ["Positioning & Macro", scoreDetail.positioning_points],
-    ["Risk Modifiers", scoreDetail.risk_modifier_points],
-  ];
-  subscoresEl.innerHTML = subscores
-    .map(([label, value]) => {
-      if (value === null || value === undefined) return "";
-      const cls = value > 0 ? "positive" : value < 0 ? "negative" : "";
-      const sign = value > 0 ? "+" : "";
-      return `
-      <div class="subscore-tile">
-        <div class="subscore-label">${label}</div>
-        <div class="subscore-value ${cls}">${sign}${value}</div>
-      </div>`;
+  // One tile per pillar: points earned out of the pillar's maximum.
+  subscoresEl.replaceChildren(
+    ...scoreDetail.pillars.map((p) => {
+      const tile = document.createElement("div");
+      tile.className = "subscore-tile";
+      const label = document.createElement("div");
+      label.className = "subscore-label";
+      label.textContent = p.name;
+      const value = document.createElement("div");
+      const ratio = p.max ? p.points / p.max : 0;
+      value.className = `subscore-value ${ratio >= 0.6 ? "positive" : ratio < 0.4 ? "negative" : ""}`;
+      value.textContent = `${p.points}`;
+      const max = document.createElement("span");
+      max.className = "subscore-max";
+      max.textContent = ` / ${p.max}`;
+      value.appendChild(max);
+      tile.append(label, value);
+      return tile;
     })
-    .join("");
+  );
 
-  const trail = scoreDetail.audit_trail || [];
-  trailEl.innerHTML = trail.length
-    ? trail.map((line) => `<li class="${line.trim().startsWith("-") ? "negative" : "positive"}">${line}</li>`).join("")
-    : `<li class="empty-state" style="background:none;border:none;">${scoreDetail.reason || "No rules applied"}</li>`;
+  // Every rule, grouped by pillar: "earned / possible" and why.
+  trailEl.replaceChildren();
+  for (const p of scoreDetail.pillars) {
+    const head = document.createElement("li");
+    head.className = "audit-pillar";
+    head.textContent = `${p.name}: ${p.points} / ${p.max} pts`;
+    trailEl.appendChild(head);
+    for (const item of scoreDetail.items.filter((i) => i.pillar === p.key)) {
+      const li = document.createElement("li");
+      const ratio = item.max ? item.points / item.max : 0;
+      li.className = ratio >= 0.6 ? "positive" : ratio < 0.4 ? "negative" : "";
+      li.textContent = `${item.points.toFixed(1)} / ${item.max.toFixed(0)} pts: ${item.text}`;
+      trailEl.appendChild(li);
+    }
+  }
+  const total = document.createElement("li");
+  total.className = "audit-total";
+  total.textContent = `Total: ${Number(scoreDetail.score).toFixed(1)} / 100 → ${scoreDetail.signal}. ${SCORE_DISCLAIMER}`;
+  trailEl.appendChild(total);
+}
+
+// Headlines come from third-party RSS feeds, so they are untrusted: built with
+// DOM APIs (textContent, never innerHTML) and linked only for http(s) URLs.
+// Plain news on purpose: no sentiment colour or score, and it is not a score input.
+function renderRecentNews(items) {
+  const el = document.getElementById("recent-news");
+  el.replaceChildren();
+  if (!items || !items.length) {
+    const li = document.createElement("li");
+    li.className = "empty-state";
+    li.textContent = "No recent headlines that explicitly mention this company";
+    el.appendChild(li);
+    return;
+  }
+  for (const d of items) {
+    const li = document.createElement("li");
+    li.className = "driver";
+
+    let safeUrl = null;
+    let host = "";
+    try {
+      const u = new URL(d.url);
+      if (u.protocol === "https:" || u.protocol === "http:") {
+        safeUrl = u.href;
+        host = u.hostname.replace(/^www\./, "");
+      }
+    } catch (e) {
+      /* no/invalid URL: render the headline as plain text */
+    }
+
+    const title = document.createElement(safeUrl ? "a" : "span");
+    title.className = "driver-title";
+    title.textContent = d.title;
+    if (safeUrl) {
+      title.href = safeUrl;
+      title.target = "_blank";
+      title.rel = "noopener noreferrer nofollow";
+    }
+
+    const meta = document.createElement("span");
+    meta.className = "driver-when";
+    const date = new Date(d.published_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    const source = d.source || host;
+    meta.textContent = source ? `${source} \u00b7 ${date}` : date;
+
+    li.append(title, meta);
+    el.appendChild(li);
+  }
+}
+
+// Every timestamp below is a real instant recorded when the data was fetched or
+// computed (see migration 009), shown in the viewer's timezone with its age.
+function renderFreshness(data) {
+  const f = data.freshness;
+  if (!f) return;
+  Freshness.syncServerClock(f.server_now);
+
+  const barDate = f.latest_bar_date
+    ? new Date(`${f.latest_bar_date}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
+    : "—";
+
+  // Hero line: the one-glance answer to "as of when is this price?"
+  const hero = document.getElementById("hero-freshness");
+  hero.replaceChildren();
+  const bar = document.createElement("span");
+  bar.textContent = `Price bar: ${barDate}${f.market_open && f.last_refresh_kind === "manual" ? " (intraday, may lag ~15 min)" : " close"} ·`;
+  const fetched = document.createElement("span");
+  Freshness.stamp(fetched, f.prices_fetched_at, { label: "fetched", overdue: f.prices_overdue });
+  hero.append(bar, fetched);
+
+  const rows = [
+    ["Price bars", f.prices_fetched_at, `latest bar ${barDate}; fetched from Yahoo Finance`, f.prices_overdue],
+    ["News feeds", f.news_fetched_at, "Yahoo Finance and Google News, filtered to headlines naming this company", f.prices_overdue],
+    ["Technicals (SMA / ATR / RSI)", f.technicals_computed_at, "computed from the stored price bars", f.prices_overdue],
+    [
+      "Fundamentals (P/E, market cap, beta)",
+      data.fundamentals && data.fundamentals.as_of,
+      "Yahoo Finance snapshot, cached up to 24 h",
+      false,
+    ],
+    ["Recent news", f.news_panel_computed_at, "latest headlines that name this company, re-ranked on every refresh", false],
+    ["Investment Score", f.server_now, "calculated live from the price, RSI and sector data above (news is not an input)", false],
+  ];
+  const body = document.getElementById("freshness-rows");
+  body.replaceChildren();
+  for (const [label, iso, note, overdue] of rows) {
+    const tr = document.createElement("tr");
+    const a = document.createElement("td");
+    a.textContent = label;
+    const b = document.createElement("td");
+    const when = document.createElement("div");
+    Freshness.stamp(when, iso, { overdue });
+    const n = document.createElement("div");
+    n.className = "metric-footnote";
+    n.textContent = note;
+    b.append(when, n);
+    tr.append(a, b);
+    body.appendChild(tr);
+  }
+
+  const kind = f.last_refresh_kind === "manual" ? "refreshed on demand" : f.last_refresh_kind === "eod" ? "scheduled update" : "";
+  const summary = document.getElementById("freshness-summary");
+  Freshness.stamp(summary, f.prices_fetched_at, { label: kind ? `${kind}:` : "prices:", overdue: f.prices_overdue });
+  document.getElementById("freshness-note").textContent = f.prices_overdue
+    ? "A scheduled update has run since this stock was last fetched (or none is recorded). Use Refresh Data for a current quote."
+    : "Data refreshes automatically daily at 09:00, 15:00 and 23:00 Israel time. Refresh Data fetches this stock from Yahoo Finance right now.";
 }
 
 function renderPatternHints(hints) {
@@ -585,6 +689,8 @@ async function loadTicker(ticker) {
   renderGovernancePanel(data.enrichment);
   renderMacroAlignmentPanel(data.sector_flow);
   renderScoreRationale(data.score_detail);
+  renderRecentNews(data.recent_news);
+  renderFreshness(data);
   renderPatternHints(data.pattern_hints);
 }
 
@@ -630,7 +736,7 @@ refreshBtn.addEventListener("click", async () => {
       showRefreshMessage(`⚠ Refresh failed: ${result.error || "unknown error"}`, "error");
     } else {
       showRefreshMessage(
-        `✓ Refreshed: ${result.price_rows} price row(s), ${result.articles_fetched} article(s) checked. ` +
+        `✓ Refreshed at ${Freshness.fmtDateTime(result.refreshed_at)}: ${result.price_rows} price row(s), ${result.articles_fetched} article(s) checked. ` +
           `${result.remaining_refreshes} refresh(es) left this hour.`,
         "ok"
       );

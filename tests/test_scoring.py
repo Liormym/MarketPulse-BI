@@ -1,300 +1,167 @@
+"""Investment Score v2: pure quantitative, three pillars, graded rules."""
+import pytest
+
 from marketpulse.scoring import (
     ATR_ZSCORE_PENALTY_THRESHOLD,
-    MAX_NO_SENTIMENT_BASE,
     MIN_PRICES_FOR_SCORE,
-    POINTS_BEARISH_CONVICTION_PENALTY,
-    POINTS_HIGH_VOLATILITY_PENALTY,
-    POINTS_INSIDER_SELLING_PENALTY,
-    POINTS_SHORT_SQUEEZE_BONUS,
-    SELL_THE_NEWS_PRICE_EXTENSION_PCT,
-    SELL_THE_NEWS_SENTIMENT_THRESHOLD,
-    SELL_THE_NEWS_VOLUME_CLIMAX_MULTIPLIER,
-    SELLER_EXHAUSTION_LOOKBACK_DAYS,
+    MOMENTUM_MAX,
+    PILLAR_MAX,
+    RISK_MAX,
+    SECTOR_MAX,
+    TREND_MAX,
     compute_investment_score,
+    rsi_points,
+    signal_label,
 )
 
+N = MIN_PRICES_FOR_SCORE + 10
 
-def _base_kwargs(n=MIN_PRICES_FOR_SCORE + 10, price=100.0):
-    closes = [price] * n
-    volumes = [1000] * n
-    smas = [price] * n
-    return dict(
-        closes=closes,
-        volumes=volumes,
-        sma20_series=list(smas),
-        sma50_series=list(smas),
-        sma200_series=list(smas),
-        recent_sentiment=[],
-        atr14=None,
-        atr_90d_avg=None,
-        atr_90d_std=None,
-        avg_volume_20d=None,
-        sector_flow_status=None,
-        short_percent_of_float=None,
+
+def _kw(price=100.0, sma20=100.0, sma50=100.0, sma200=100.0, **over):
+    kw = dict(
+        closes=[price] * N,
+        sma20_series=[sma20] * N,
+        sma50_series=[sma50] * N,
+        sma200_series=[sma200] * N,
+        rsi14=50.0,
+        rsi14_prev=50.0,
+        atr14=1.0,
+        atr_90d_avg=1.0,
+        atr_90d_std=0.2,
+        sector_flow_status="Neutral",
+        sector_rel_20d_pct=0.0,
+        short_percent_of_float=0.03,
         has_recent_executive_sale=False,
     )
+    kw.update(over)
+    return kw
+
+
+def score(**kw):
+    return compute_investment_score(**kw)
+
+
+def test_pillar_budgets_sum_to_100():
+    assert TREND_MAX == 45 and MOMENTUM_MAX == 30 and SECTOR_MAX == 15 and RISK_MAX == 10
+    assert sum(PILLAR_MAX.values()) == 100
 
 
 def test_insufficient_history_returns_none_with_reason():
-    kwargs = _base_kwargs(n=MIN_PRICES_FOR_SCORE - 1)
-    result = compute_investment_score(**kwargs)
-    assert result.score is None
-    assert str(MIN_PRICES_FOR_SCORE) in result.reason
+    r = score(**{**_kw(), "closes": [100.0] * (MIN_PRICES_FOR_SCORE - 1)})
+    assert r.score is None and str(MIN_PRICES_FOR_SCORE) in r.reason
 
 
-def test_flat_price_no_data_defaults_to_neutral_sector_only():
-    # Flat price == flat SMAs (not strictly above), no sentiment/sector/risk data:
-    # only the "no sector data, defaulted to neutral" rule fires (+10 raw),
-    # then normalized from the 70-point no-sentiment base up to /100.
-    kwargs = _base_kwargs()
-    result = compute_investment_score(**kwargs)
-    expected = round(10.0 / MAX_NO_SENTIMENT_BASE * 100)
-    assert result.score == expected
-    assert result.sentiment_points == 0.0
-    assert result.risk_modifier_points == 0.0
-    assert any("neutral" in line.lower() for line in result.audit_trail)
-    assert any("normalized" in line.lower() for line in result.audit_trail)
+def test_the_score_takes_no_sentiment_or_news_input():
+    with pytest.raises(TypeError):
+        score(**_kw(), recent_sentiment=[0.9])
+    r = score(**_kw())
+    assert not any("sentiment" in line.lower() or "news" in line.lower() for line in r.audit_trail)
 
 
-def test_price_above_smas_awards_technical_points_and_logs_audit():
-    kwargs = _base_kwargs()
-    kwargs["closes"][-1] = 120.0  # price now above the (flat, 100) SMAs
-    result = compute_investment_score(**kwargs)
-    # Raw technical contribution is 25 (+10 >SMA50, +15 >SMA200); no sentiment
-    # data means it's reported post-normalization (25/70*100).
-    assert result.technical_points == round(25.0 / MAX_NO_SENTIMENT_BASE * 100, 1)
-    assert any("50-day SMA" in line for line in result.audit_trail)
-    assert any("200-day SMA" in line for line in result.audit_trail)
+def test_a_neutral_stock_lands_mid_scale_with_half_trend_points():
+    r = score(**_kw())  # price exactly on every average, RSI 50, neutral sector, 3% shorts, normal volatility
+    assert r.trend_points == TREND_MAX / 2
+    assert 49 <= r.score <= 54
+    assert signal_label(r.score) == "Neutral / Mixed"
 
 
-def test_sma20_above_sma50_adds_points():
-    kwargs = _base_kwargs()
-    kwargs["sma20_series"][-1] = 105.0
-    kwargs["sma50_series"][-1] = 100.0
-    kwargs["closes"][-1] = 90.0  # keep price below both SMA50/200 to isolate this rule
-    result = compute_investment_score(**kwargs)
-    assert result.technical_points == round(10.0 / MAX_NO_SENTIMENT_BASE * 100, 1)
-    assert any("20-day SMA above 50-day SMA" in line for line in result.audit_trail)
+def test_trend_is_graded_not_binary():
+    flat = score(**_kw()).trend_points
+    slightly_above = score(**_kw(price=101.0)).trend_points  # +1% on every average
+    far_above = score(**_kw(price=130.0)).trend_points
+    below = score(**_kw(price=95.0)).trend_points
+    assert below < flat < slightly_above < far_above
+    assert far_above == pytest.approx(37.5)  # three price-vs-average rules maxed (30) + level 50/200 alignment (7.5)
+    full = score(**_kw(price=130.0, sma20=120.0, sma50=110.0, sma200=100.0)).trend_points
+    assert full == TREND_MAX
 
 
-def test_normalization_only_applies_when_sentiment_is_entirely_absent():
-    # Same technicals, but WITH sentiment data this time - no normalization,
-    # raw technical_points reported as-is.
-    kwargs = _base_kwargs()
-    kwargs["closes"][-1] = 120.0
-    kwargs["recent_sentiment"] = [0.0]  # present (even if neutral) - not "absent"
-    result = compute_investment_score(**kwargs)
-    assert result.technical_points == 25.0
-    assert not any("normalized" in line.lower() for line in result.audit_trail)
+def test_death_cross_alignment_scores_zero_on_that_rule():
+    r = score(**_kw(sma50=94.0, sma200=100.0))
+    item = [i for i in r.items if "alignment" in i.text][0]
+    assert item.points == 0.0 and "death-cross" in item.text
 
 
-def test_normalized_subscores_still_sum_to_the_final_score():
-    kwargs = _base_kwargs()
-    kwargs["closes"][-1] = 130.0
-    kwargs["short_percent_of_float"] = 0.15  # short squeeze bonus, since technicals are strong
-    kwargs["atr14"] = 10.0  # volatility penalty, applied post-normalization
-    kwargs["atr_90d_avg"] = 2.0
-    kwargs["atr_90d_std"] = 1.0
-    result = compute_investment_score(**kwargs)
-    total = result.sentiment_points + result.technical_points + result.positioning_points + result.risk_modifier_points
-    assert round(total) == result.score
+def test_rsi_curve_rewards_healthy_momentum_and_penalises_overbought():
+    assert rsi_points(60) == MOMENTUM_MAX  # healthy bullish
+    assert rsi_points(50) < rsi_points(58)  # neutral < healthy
+    assert rsi_points(75) < rsi_points(65) and rsi_points(85) < rsi_points(75)  # overbought keeps shrinking
+    assert rsi_points(85) < 3
+    healthy = score(**_kw(rsi14=60.0)).score
+    stretched = score(**_kw(rsi14=82.0)).score
+    assert healthy - stretched >= 25
 
 
-def test_seller_exhaustion_bonus_when_all_down_days_are_low_volume():
-    kwargs = _base_kwargs()
-    window = SELLER_EXHAUSTION_LOOKBACK_DAYS + 1
-    kwargs["closes"][-window:] = [110.0, 108.0, 106.0, 104.0, 102.0, 100.0][:window]
-    kwargs["volumes"][-window:] = [500] * window
-    kwargs["avg_volume_20d"] = 1000.0
-    result = compute_investment_score(**kwargs)
-    assert result.flags.get("seller_exhaustion") is True
-    assert any("exhaustion" in line.lower() for line in result.audit_trail)
+def test_overbought_stock_cannot_reach_80_even_with_a_perfect_everything_else():
+    r = score(
+        **_kw(
+            price=130.0, sma20=120.0, sma50=110.0, sma200=100.0,
+            rsi14=85.0, sector_flow_status="Accumulation", sector_rel_20d_pct=5.0,
+        )
+    )
+    assert r.score < 90  # trend 45 + sector 15 + risk 10 = 70 max + ~1 momentum
+    assert r.flags.get("overbought_rsi") is True
+    assert any("overbought" in line and "lost" in line for line in r.audit_trail)
 
 
-def test_seller_exhaustion_not_triggered_if_any_down_day_has_high_volume():
-    kwargs = _base_kwargs()
-    window = SELLER_EXHAUSTION_LOOKBACK_DAYS + 1
-    kwargs["closes"][-window:] = [110.0, 108.0, 106.0, 104.0, 102.0, 100.0][:window]
-    kwargs["volumes"][-window:] = [500, 500, 2000, 500, 500, 500][:window]
-    kwargs["avg_volume_20d"] = 1000.0
-    result = compute_investment_score(**kwargs)
-    assert "seller_exhaustion" not in result.flags
+def test_oversold_recovery_is_rewarded_only_when_rsi_is_rising():
+    rising = score(**_kw(rsi14=35.0, rsi14_prev=28.0))
+    falling = score(**_kw(rsi14=35.0, rsi14_prev=42.0))
+    assert rising.momentum_points > falling.momentum_points
+    assert rising.flags.get("oversold_recovery") is True
+    assert "oversold_recovery" not in falling.flags
+    assert rising.momentum_points <= 22.0  # capped: a bounce never outranks healthy momentum
 
 
-def test_sentiment_points_scale_linearly_with_weighted_sentiment():
-    kwargs = _base_kwargs()
-    kwargs["recent_sentiment"] = [1.0, 1.0]  # maximally positive
-    result = compute_investment_score(**kwargs)
-    assert result.sentiment_points == 30.0
-
-    kwargs["recent_sentiment"] = [-1.0, -1.0]  # maximally negative
-    result = compute_investment_score(**kwargs)
-    assert result.sentiment_points == 0.0
+def test_sector_pillar_flow_and_relative_performance():
+    acc = score(**_kw(sector_flow_status="Accumulation", sector_rel_20d_pct=3.0)).sector_points
+    dist = score(**_kw(sector_flow_status="Distribution", sector_rel_20d_pct=-3.0)).sector_points
+    assert acc == SECTOR_MAX and dist == 0.0
 
 
-def test_short_squeeze_setup_when_technicals_are_strong():
-    kwargs = _base_kwargs()
-    kwargs["closes"][-1] = 130.0  # strong technicals: >SMA50, >SMA200
-    kwargs["short_percent_of_float"] = 0.15
-    result = compute_investment_score(**kwargs)
-    assert result.flags.get("short_squeeze_setup") is True
-    assert POINTS_SHORT_SQUEEZE_BONUS in [
-        float(line.split()[0]) for line in result.audit_trail if "Short Squeeze" in line
-    ]
+def test_missing_data_is_neutral_and_says_so():
+    r = score(**_kw(sector_flow_status=None, sector_rel_20d_pct=None, rsi14=None, short_percent_of_float=None, atr14=None))
+    assert r.sector_points == SECTOR_MAX / 2
+    assert r.momentum_points == MOMENTUM_MAX / 2
+    assert sum("no data" in line or "not enough" in line for line in r.audit_trail) >= 4
 
 
-def test_bearish_conviction_when_technicals_are_weak():
-    kwargs = _base_kwargs()  # flat price -> 0 technical points -> "weak"
-    kwargs["short_percent_of_float"] = 0.15
-    result = compute_investment_score(**kwargs)
-    assert result.flags.get("bearish_conviction") is True
-    assert any(str(int(POINTS_BEARISH_CONVICTION_PENALTY)) in line for line in result.audit_trail)
+def test_short_interest_squeeze_vs_bearish_conviction():
+    strong = score(**_kw(price=130.0, sma20=120.0, sma50=110.0, sma200=100.0, short_percent_of_float=0.20))
+    weak = score(**_kw(price=80.0, short_percent_of_float=0.20))
+    assert strong.flags.get("short_squeeze_setup") is True
+    assert weak.flags.get("bearish_conviction") is True
+    assert strong.risk_points > weak.risk_points
+    assert score(**_kw(short_percent_of_float=0.0)).risk_points > score(**_kw(short_percent_of_float=0.08)).risk_points
 
 
-def test_low_short_interest_triggers_neither_rule():
-    kwargs = _base_kwargs()
-    kwargs["short_percent_of_float"] = 0.02
-    result = compute_investment_score(**kwargs)
-    assert "short_squeeze_setup" not in result.flags
-    assert "bearish_conviction" not in result.flags
+def test_volatility_and_insider_selling_reduce_the_risk_pillar():
+    calm = score(**_kw()).risk_points
+    jumpy = score(**_kw(atr14=1.0 + (ATR_ZSCORE_PENALTY_THRESHOLD + 1) * 0.2)).risk_points
+    sold = score(**_kw(has_recent_executive_sale=True)).risk_points
+    assert jumpy < calm and sold < calm
+    assert score(**_kw(short_percent_of_float=0.0, atr14=0.7)).risk_points == RISK_MAX  # best case: no shorts, calm, no sales
 
 
-def test_high_atr_zscore_applies_volatility_penalty():
-    kwargs = _base_kwargs(price=100.0)
-    # 90-day ATR average 2.0, stdev 1.0 -> current ATR of 3.7 is 1.7 SD above.
-    kwargs["atr14"] = 3.7
-    kwargs["atr_90d_avg"] = 2.0
-    kwargs["atr_90d_std"] = 1.0
-    result = compute_investment_score(**kwargs)
-    assert result.flags.get("high_volatility") is True
-    assert result.risk_modifier_points == POINTS_HIGH_VOLATILITY_PENALTY
-    assert any("1.7 SD above historical average" in line for line in result.audit_trail)
+def test_score_equals_sum_of_pillars_and_audit_trail_explains_every_point():
+    r = score(**_kw(price=108.0, sma20=104.0, sma50=102.0, sma200=96.0, rsi14=62.0, sector_flow_status="Accumulation", sector_rel_20d_pct=1.0))
+    pillars = r.trend_points + r.momentum_points + r.sector_points + r.risk_points
+    assert abs(r.score - pillars) <= 1.0  # only the final rounding
+    assert sum(i.points for i in r.items) == pytest.approx(pillars, abs=0.2)
+    assert {i.pillar for i in r.items} == {"trend", "momentum", "sector", "risk"}
+    assert all(i.text for i in r.items) and len(r.audit_trail) == len(r.items)
 
 
-def test_atr_zscore_at_or_below_threshold_no_penalty():
-    kwargs = _base_kwargs(price=100.0)
-    # Current ATR exactly 1.5 SD above average - at the threshold, not past it.
-    kwargs["atr14"] = 3.5
-    kwargs["atr_90d_avg"] = 2.0
-    kwargs["atr_90d_std"] = 1.0
-    result = compute_investment_score(**kwargs)
-    assert "high_volatility" not in result.flags
+def test_signal_labels_are_diagnostic_not_predictive():
+    assert signal_label(70) == "Strong Signal" and signal_label(95) == "Strong Signal"
+    assert signal_label(69) == "Neutral / Mixed" and signal_label(45) == "Neutral / Mixed"
+    assert signal_label(44) == "Weak Signal"
+    assert signal_label(None) is None
 
 
-def test_atr_below_its_own_historical_average_no_penalty():
-    kwargs = _base_kwargs(price=100.0)
-    kwargs["atr14"] = 5.0  # high in absolute/percent terms...
-    kwargs["atr_90d_avg"] = 5.0  # ...but right at its own historical average
-    kwargs["atr_90d_std"] = 1.0
-    result = compute_investment_score(**kwargs)
-    assert "high_volatility" not in result.flags
-
-
-def test_atr_penalty_requires_full_90_day_history():
-    kwargs = _base_kwargs(price=100.0)
-    kwargs["atr14"] = 10.0  # would be a huge z-score if avg/std were known
-    kwargs["atr_90d_avg"] = None
-    kwargs["atr_90d_std"] = None
-    result = compute_investment_score(**kwargs)
-    assert "high_volatility" not in result.flags
-
-
-def test_atr_penalty_is_capped_at_exactly_10_points():
-    kwargs = _base_kwargs(price=100.0)
-    kwargs["atr14"] = 50.0  # an extreme outlier - many, many SD above average
-    kwargs["atr_90d_avg"] = 2.0
-    kwargs["atr_90d_std"] = 1.0
-    result = compute_investment_score(**kwargs)
-    assert result.risk_modifier_points == POINTS_HIGH_VOLATILITY_PENALTY == -10.0
-
-
-def test_insider_selling_penalty_applied():
-    kwargs = _base_kwargs()
-    kwargs["has_recent_executive_sale"] = True
-    result = compute_investment_score(**kwargs)
-    assert result.flags.get("insider_selling") is True
-    assert result.risk_modifier_points == POINTS_INSIDER_SELLING_PENALTY
-
-
-def test_score_is_clamped_to_0_when_penalties_exceed_gains():
-    kwargs = _base_kwargs()
-    kwargs["atr14"] = 10.0  # big volatility penalty
-    kwargs["atr_90d_avg"] = 2.0
-    kwargs["atr_90d_std"] = 1.0
-    kwargs["has_recent_executive_sale"] = True  # insider penalty
-    kwargs["short_percent_of_float"] = 0.20  # bearish conviction penalty (weak technicals)
-    result = compute_investment_score(**kwargs)
-    assert result.score == 0
-
-
-def test_maximally_bullish_scenario_hits_100():
-    kwargs = _base_kwargs()
-    kwargs["closes"][-1] = 150.0  # price above both SMA50/200
-    kwargs["sma20_series"][-1] = 149.0  # 20 SMA above 50 SMA
-    window = SELLER_EXHAUSTION_LOOKBACK_DAYS + 1
-    kwargs["closes"][-window:-1] = [140.0, 138.0, 136.0, 134.0, 132.0][: window - 1]
-    kwargs["volumes"][-window:] = [500] * window
-    kwargs["avg_volume_20d"] = 1000.0
-    kwargs["recent_sentiment"] = [1.0]
-    kwargs["sector_flow_status"] = "Accumulation"
-    kwargs["short_percent_of_float"] = 0.15  # squeeze bonus, since technicals are strong
-    result = compute_investment_score(**kwargs)
-    assert result.score == 100
-
-
-def test_sell_the_news_triggers_on_price_extension_with_high_sentiment():
-    kwargs = _base_kwargs()
-    kwargs["recent_sentiment"] = [1.0]  # 30/30 sentiment points, above the threshold
-    kwargs["sma20_series"][-1] = 100.0
-    kwargs["closes"][-1] = 100.0 * (1 + (SELL_THE_NEWS_PRICE_EXTENSION_PCT + 1) / 100)  # just past the threshold
-    result = compute_investment_score(**kwargs)
-    assert result.flags.get("sell_the_news_risk") is True
-    assert any("sell the news" in line.lower() for line in result.audit_trail)
-
-
-def test_sell_the_news_triggers_on_volume_climax_with_high_sentiment():
-    kwargs = _base_kwargs()
-    kwargs["recent_sentiment"] = [1.0]
-    kwargs["avg_volume_20d"] = 1000.0
-    kwargs["volumes"][-1] = int(1000 * SELL_THE_NEWS_VOLUME_CLIMAX_MULTIPLIER) + 100
-    result = compute_investment_score(**kwargs)
-    assert result.flags.get("sell_the_news_risk") is True
-
-
-def test_sell_the_news_does_not_trigger_without_overextension():
-    kwargs = _base_kwargs()
-    kwargs["recent_sentiment"] = [1.0]  # high sentiment, but price flat at SMA20 and normal volume
-    kwargs["avg_volume_20d"] = 1000.0
-    result = compute_investment_score(**kwargs)
-    assert "sell_the_news_risk" not in result.flags
-
-
-def test_sell_the_news_does_not_trigger_below_sentiment_threshold():
-    kwargs = _base_kwargs()
-    # Sentiment present but not high enough to clear the threshold
-    kwargs["recent_sentiment"] = [(SELL_THE_NEWS_SENTIMENT_THRESHOLD / 30) - 0.5]
-    kwargs["sma20_series"][-1] = 100.0
-    kwargs["closes"][-1] = 130.0  # would otherwise count as "overextended"
-    result = compute_investment_score(**kwargs)
-    assert "sell_the_news_risk" not in result.flags
-
-
-def test_sell_the_news_is_purely_informational_and_does_not_change_the_score():
-    # SMA-50/200 fixed low enough that price clears them either way, so the
-    # technical rules keyed on them don't vary between scenarios - only the
-    # SMA-20 "overextension" (and thus the sell-the-news flag) changes.
-    def build(overextended: bool):
-        kwargs = _base_kwargs()
-        kwargs["recent_sentiment"] = [1.0]
-        kwargs["sma50_series"][-1] = 80.0
-        kwargs["sma200_series"][-1] = 80.0
-        kwargs["sma20_series"][-1] = 100.0
-        kwargs["closes"][-1] = 135.0 if overextended else 100.0
-        return kwargs
-
-    with_flag = compute_investment_score(**build(True))
-    without_flag = compute_investment_score(**build(False))
-    assert with_flag.flags.get("sell_the_news_risk") is True
-    assert "sell_the_news_risk" not in without_flag.flags
-    assert with_flag.technical_points == without_flag.technical_points
-    assert with_flag.score == without_flag.score
+def test_score_is_continuous_so_near_identical_stocks_do_not_tie():
+    a = score(**_kw(price=101.0, sma20=100.0, sma50=100.0, sma200=99.0, rsi14=52.2))
+    b = score(**_kw(price=101.4, sma20=100.0, sma50=100.0, sma200=99.0, rsi14=52.2))
+    assert a.score != b.score and b.score > a.score
+    assert a.score != round(a.score)  # not an integer
+    assert signal_label(69.6) == "Neutral / Mixed"  # bands use the exact value

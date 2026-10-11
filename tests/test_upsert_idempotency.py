@@ -70,8 +70,6 @@ def test_upsert_news_articles_is_idempotent(db_conn):
         published_at=datetime.now(timezone.utc),
         title="Test headline for idempotency",
         source_url="https://example.com/test",
-        category="Positive",
-        score=0.75,
     )
 
     upsert_news_articles(db_conn, [article], asset_keys)

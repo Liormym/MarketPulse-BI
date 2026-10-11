@@ -1,65 +1,61 @@
-"""Daemon: triggers scripts/run_daily_update.py at 23:10 on every US market
-weekday (Mon-Fri), the equivalent of the cron expression `10 23 * * 1-5` -
-the same entry point as the CronJob in k8s/eod-update-cronjob.yaml, giving
-the market close time to settle before the EOD update runs. This process is meant to be left running in the
-background (see README.md for nohup/tmux instructions); for a real
-production deployment, prefer the equivalent crontab entry or the existing
-k8s/ CronJob pattern instead of a long-lived Python daemon - this script is
-the simple, dependency-light option for a single dev machine.
+"""Daemon: runs scripts/run_daily_update.py at 09:00, 15:00 and 23:00 Israel
+time, every day - the same schedule as the CronJob in k8s/eod-update-cronjob.yaml
+(`0 9,15,23 * * *`, Asia/Jerusalem), defined once in marketpulse/schedule.py.
 
-Each fire runs run_daily_update.py as a subprocess (not imported in-process)
-so a crash inside that pipeline can never take the scheduler daemon down
-with it - the daemon logs the failure and keeps waiting for tomorrow's run.
+Meant to be left running in the background on a single dev machine (see
+README.md for nohup/tmux). For production use the k8s CronJob instead of a
+long-lived Python daemon.
+
+Each fire runs run_daily_update.py as a subprocess (not imported in-process) so
+a crash inside the pipeline can never take the daemon down: it logs the failure
+and waits for the next slot. A run that overruns past the next slot simply
+skips it (runs never overlap) and the daemon picks up the one after.
 
 Usage: PYTHONPATH=src .venv/bin/python scripts/scheduler.py
 """
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
-import schedule
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from marketpulse.schedule import describe_schedule, next_scheduled_run  # noqa: E402
+
 PYTHON = sys.executable
 RUN_DAILY_UPDATE = ROOT / "scripts" / "run_daily_update.py"
-DAILY_UPDATE_TIME = "23:10"
+POLL_SECONDS = 20
 
 
 def run_daily_update() -> None:
     started_at = datetime.now().isoformat(timespec="seconds")
-    print(f"[{started_at}] Triggering EOD update ({RUN_DAILY_UPDATE.name})...", flush=True)
+    print(f"[{started_at}] Triggering update ({RUN_DAILY_UPDATE.name})...", flush=True)
     try:
         result = subprocess.run([PYTHON, str(RUN_DAILY_UPDATE)], cwd=ROOT)
     except Exception as exc:  # noqa: BLE001 - a scheduler daemon must never die from a bad run
-        print(f"[{datetime.now().isoformat(timespec='seconds')}] EOD update crashed: {exc}", flush=True)
+        print(f"[{datetime.now().isoformat(timespec='seconds')}] Update crashed: {exc}", flush=True)
         return
 
     finished_at = datetime.now().isoformat(timespec="seconds")
     if result.returncode == 0:
-        print(f"[{finished_at}] EOD update finished successfully.", flush=True)
+        print(f"[{finished_at}] Update finished successfully.", flush=True)
     else:
-        print(f"[{finished_at}] EOD update FAILED (exit {result.returncode}) - see output above.", flush=True)
+        print(f"[{finished_at}] Update FAILED (exit {result.returncode}) - see output above.", flush=True)
 
 
 def main() -> None:
-    # Explicit Mon-Fri registration, not schedule.every().day, to match the
-    # crontab expression `10 23 * * 1-5` (US market weekdays) exactly -
-    # there's nothing to update on a day the market didn't trade.
-    schedule.every().monday.at(DAILY_UPDATE_TIME).do(run_daily_update)
-    schedule.every().tuesday.at(DAILY_UPDATE_TIME).do(run_daily_update)
-    schedule.every().wednesday.at(DAILY_UPDATE_TIME).do(run_daily_update)
-    schedule.every().thursday.at(DAILY_UPDATE_TIME).do(run_daily_update)
-    schedule.every().friday.at(DAILY_UPDATE_TIME).do(run_daily_update)
-
-    print(f"Scheduler started - EOD update will run at {DAILY_UPDATE_TIME} on US market weekdays.", flush=True)
+    print(f"Scheduler started - {describe_schedule()}.", flush=True)
     print("Press Ctrl+C to stop.", flush=True)
 
     try:
         while True:
-            schedule.run_pending()
-            time.sleep(30)
+            due = next_scheduled_run(datetime.now(timezone.utc))
+            print(f"Next run: {due.isoformat(timespec='minutes')}", flush=True)
+            while datetime.now(timezone.utc) < due:
+                time.sleep(POLL_SECONDS)
+            run_daily_update()  # blocks: a slot missed during a long run is skipped, never queued
     except KeyboardInterrupt:
         print("\nScheduler stopped.", flush=True)
 

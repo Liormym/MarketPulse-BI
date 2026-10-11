@@ -22,18 +22,9 @@ ENV PATH="/opt/venv/bin:${PATH}"
 WORKDIR /build
 COPY requirements.txt ./
 
-# CPU-only PyTorch first (see webapp.Dockerfile for why), then the rest.
-RUN pip install "torch==2.3.1+cpu" \
-        --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
- && pip install -r requirements.txt
-
-RUN python -c "import torch; assert '+cpu' in torch.__version__ and torch.version.cuda is None, torch.__version__; print('torch', torch.__version__)"
-
-# FinBERT baked in at a fixed path, so a CronJob-spawned pod never downloads
-# ~440 MB on its run. FINBERT_MODEL must match FINBERT_MODEL_NAME in k8s/configmap.yaml.
-ARG FINBERT_MODEL=ProsusAI/finbert
-ENV HF_HOME=/opt/hf-cache
-RUN python -c "import os; from transformers import pipeline; pipeline('sentiment-analysis', model=os.environ['FINBERT_MODEL'])"
+# No compiler is installed: every dependency ships a manylinux wheel except
+# sgmllib3k, a pure-Python package pip builds without one.
+RUN pip install -r requirements.txt
 
 # ---------------------------------------------------------------------------
 # runtime
@@ -47,13 +38,9 @@ RUN groupadd --system --gid ${APP_UID} app \
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONPATH=/app/src \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    HF_HOME=/opt/hf-cache \
-    HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1
+    PYTHONDONTWRITEBYTECODE=1
 
 COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder --chown=app:app /opt/hf-cache /opt/hf-cache
 
 WORKDIR /app
 COPY --chown=app:app src/ src/

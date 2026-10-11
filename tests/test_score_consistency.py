@@ -8,7 +8,7 @@ of calling enrich_stock() like the live route does. A ticker whose
 enrichment cache was empty or stale would score with no insider-selling
 penalty in the batch path while the live route (which fetches fresh on a
 cache miss) applied it - the same ticker showing two different scores
-depending on which screen you looked at (dashboard's Top 5 Strong Buys vs.
+depending on which screen you looked at (dashboard's Top 5 Highest Signals vs.
 that ticker's own deep-dive page). Both entry points now share one pipeline
 (db.build_score_kwargs) - this test exercises each entry point's REAL code
 (the actual Flask route, the actual batch-script function), not two calls
@@ -45,7 +45,8 @@ def test_batch_and_live_paths_compute_the_identical_score_for_the_same_ticker():
     assert batch_breakdown.score is not None
 
     assert batch_breakdown.score == live_payload["score"]
-    assert batch_breakdown.sentiment_points == live_payload["score_detail"]["sentiment_points"]
-    assert batch_breakdown.technical_points == live_payload["score_detail"]["technical_points"]
-    assert batch_breakdown.positioning_points == live_payload["score_detail"]["positioning_points"]
-    assert batch_breakdown.risk_modifier_points == live_payload["score_detail"]["risk_modifier_points"]
+    live_pillars = {p["key"]: p["points"] for p in live_payload["score_detail"]["pillars"]}
+    assert batch_breakdown.trend_points == live_pillars["trend"]
+    assert batch_breakdown.momentum_points == live_pillars["momentum"]
+    assert batch_breakdown.sector_points == live_pillars["sector"]
+    assert batch_breakdown.risk_points == live_pillars["risk"]

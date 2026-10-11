@@ -1,11 +1,12 @@
-"""Batch-computes the Investment Score for every watchlist ticker with
+"""Batch-computes the Investment Score (v2, pure quantitative: trend, momentum/RSI,
+sector & risk; no news or sentiment) for every watchlist ticker with
 enough price history and caches it in FactInvestmentScore, so the
-dashboard's "Top 5 Strong Buys" widget is a fast indexed SELECT instead of
+dashboard's "Top 5 Highest Signals" widget is a fast indexed SELECT instead of
 recomputing ~500+ per-ticker scores (each needing price/technicals/
-sentiment/sector-flow joins) on every page load.
+sector-flow joins) on every page load.
 
 compute_score_for_ticker() below runs the EXACT SAME pipeline as the live
-/api/stock/<ticker> route (webapp/app.py's api_stock): get_price_sentiment_
+/api/stock/<ticker> route (webapp/app.py's api_stock): get_price_
 history + get_sector_flows + enrich_stock, assembled into
 compute_investment_score()'s kwargs by the shared db.build_score_kwargs().
 This used to be two independently hand-written pipelines, and they
@@ -51,6 +52,7 @@ from sqlalchemy import text  # noqa: E402
 
 import db as webapp_db  # noqa: E402
 from marketpulse.load.db import get_engine  # noqa: E402
+from marketpulse.load.freshness import mark_source  # noqa: E402
 from marketpulse.load.upsert import upsert_investment_score_history  # noqa: E402
 from marketpulse.scoring import ScoreBreakdown, compute_investment_score  # noqa: E402
 
@@ -61,12 +63,11 @@ def compute_score_snapshot(ticker: str, sector_flows: dict | None = None) -> dic
     """Computes the Investment Score for one ticker via the exact pipeline
     the live route uses, and returns it together with what the history table
     needs: the date of the last price bar it was computed on, that bar's
-    close, the short-interest input, and whether any news sentiment was
-    available. `sector_flows` lets a batch run reuse one get_sector_flows()
+    close, the short-interest input, and the RSI it used. `sector_flows` lets a batch run reuse one get_sector_flows()
     query across every ticker instead of re-querying it per ticker; omit it
     (e.g. from a single-ticker call) and it's fetched fresh. Returns None if
     the ticker has no price history at all."""
-    data = webapp_db.get_price_sentiment_history(ticker)
+    data = webapp_db.get_price_history(ticker)
     if data is None or not data["dates"]:
         return None
 
@@ -82,7 +83,7 @@ def compute_score_snapshot(ticker: str, sector_flows: dict | None = None) -> dic
         "date_key": int(data["dates"][-1].replace("-", "")),
         "close_price": data["prices"][-1],
         "short_percent_of_float": kwargs["short_percent_of_float"],
-        "has_sentiment": any(v is not None for v in kwargs["recent_sentiment"]),
+        "rsi14": kwargs["rsi14"],
     }
 
 
@@ -94,7 +95,7 @@ def compute_score_for_ticker(ticker: str, sector_flows: dict | None = None) -> S
 def main() -> None:
     engine = get_engine()
     # Sector flow is keyed by the sector's SPDR ETF ticker (e.g. "XLK"), the
-    # same lookup db.get_price_sentiment_history() resolves per stock as
+    # same lookup db.get_price_history() resolves per stock as
     # data["sector_spdr"]. Fetched once and reused across every ticker below.
     sector_flows = {s["ticker"]: s for s in webapp_db.get_sector_flows()}
 
@@ -138,13 +139,13 @@ def main() -> None:
                     "asset_key": asset_key,
                     "date_key": snapshot["date_key"],
                     "score": breakdown.score,
-                    "sentiment_points": breakdown.sentiment_points,
-                    "technical_points": breakdown.technical_points,
-                    "positioning_points": breakdown.positioning_points,
-                    "risk_modifier_points": breakdown.risk_modifier_points,
+                    "trend_points": breakdown.trend_points,
+                    "momentum_points": breakdown.momentum_points,
+                    "sector_points": breakdown.sector_points,
+                    "risk_points": breakdown.risk_points,
+                    "rsi14": snapshot["rsi14"],
                     "close_price": snapshot["close_price"],
                     "short_percent_of_float": snapshot["short_percent_of_float"],
-                    "has_sentiment": snapshot["has_sentiment"],
                     "flags": breakdown.flags,
                     "computed_at": computed_at,
                 }
@@ -152,6 +153,7 @@ def main() -> None:
             n_scored += 1
 
         n_history = upsert_investment_score_history(conn, history_rows)
+        mark_source(conn, "scores")
 
     print(f"Scored {n_scored} tickers, skipped {n_skipped} (insufficient price history), "
           f"{n_history} history rows written")

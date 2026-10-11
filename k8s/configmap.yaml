@@ -16,6 +16,5 @@ data:
   NEWS_MAX_WORKERS: "8"
   PRICE_MAX_WORKERS: "8"
   OUTBOUND_MIN_INTERVAL_SECONDS: "0.25"
-  FINBERT_MODEL_NAME: ProsusAI/finbert
   DB_HOST: postgres.marketpulse.svc.cluster.local
   DB_PORT: "5432"

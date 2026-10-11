@@ -23,31 +23,12 @@ ENV PATH="/opt/venv/bin:${PATH}"
 WORKDIR /build
 COPY requirements.txt requirements-web.txt ./
 
-# CPU-only PyTorch first. The default PyPI build drags in several GB of CUDA
-# libraries a CPU-only cluster can never use. The explicit "+cpu" version exists
-# only on PyTorch's own index, so the choice is deterministic; PyPI stays
-# available for torch's own dependencies. The "-r" install below then sees
-# torch==2.3.1 as already satisfied (the "+cpu" local version matches) and does
-# not replace it.
 # No compiler is installed: every dependency ships a manylinux wheel except
 # sgmllib3k, a pure-Python package pip builds without one.
-RUN pip install "torch==2.3.1+cpu" \
-        --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
- && pip install -r requirements-web.txt
-
-# Fail the build, loudly, if a CUDA build of torch ever sneaks back in.
-RUN python -c "import torch; assert '+cpu' in torch.__version__ and torch.version.cuda is None, torch.__version__; print('torch', torch.__version__)"
-
-# Bake FinBERT into the image at a fixed path. The runtime stage points HF_HOME
-# here and forbids network model lookups, so a restarted worker (or a freshly
-# scheduled pod) never re-downloads ~440 MB. FINBERT_MODEL must match the
-# FINBERT_MODEL_NAME the app runs with (k8s/configmap.yaml).
-ARG FINBERT_MODEL=ProsusAI/finbert
-ENV HF_HOME=/opt/hf-cache
-RUN python -c "import os; from transformers import pipeline; pipeline('sentiment-analysis', model=os.environ['FINBERT_MODEL'])"
+RUN pip install -r requirements-web.txt
 
 # ---------------------------------------------------------------------------
-# runtime: venv + model cache + app code, running as a non-root user
+# runtime: venv + app code, running as a non-root user
 # ---------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE} AS runtime
 
@@ -58,13 +39,9 @@ RUN groupadd --system --gid ${APP_UID} app \
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONPATH=/app/src \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    HF_HOME=/opt/hf-cache \
-    HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1
+    PYTHONDONTWRITEBYTECODE=1
 
 COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder --chown=app:app /opt/hf-cache /opt/hf-cache
 
 WORKDIR /app
 COPY --chown=app:app src/ src/

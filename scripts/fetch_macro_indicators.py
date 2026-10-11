@@ -39,6 +39,7 @@ import yfinance as yf  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
 from marketpulse.load.db import get_engine  # noqa: E402
+from marketpulse.load.freshness import mark_source  # noqa: E402
 
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 
@@ -218,6 +219,7 @@ def main() -> None:
                 },
             )
             n += 1
+        mark_source(conn, "macro")
     print(f"Upserted {n} MacroIndicators rows ({all_dates[0].date()} to {all_dates[-1].date()})")
 
 

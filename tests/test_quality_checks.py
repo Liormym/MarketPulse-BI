@@ -1,6 +1,5 @@
 from datetime import date, datetime, timezone
 
-from marketpulse.aggregate import ScoredArticle
 from marketpulse.extract.news import NewsRecord
 from marketpulse.extract.prices import PriceRecord
 from marketpulse.quality.checks import (
@@ -9,7 +8,6 @@ from marketpulse.quality.checks import (
     check_duplicate_price_records,
     check_invalid_empty_headlines,
     check_invalid_numeric_values,
-    check_missing_sentiment_result,
     check_missing_ticker,
 )
 
@@ -75,17 +73,6 @@ def test_check_duplicate_price_records_dedupes_by_ticker_and_date():
     good, result = check_duplicate_price_records(records)
 
     assert len(good) == 2
-    assert result.failed_records == 1
-
-
-def test_check_missing_sentiment_result_flags_but_does_not_drop():
-    scored = [
-        ScoredArticle(ticker="AAPL", trade_date=date(2026, 3, 5), category="Positive", score=0.9),
-        ScoredArticle(ticker="AAPL", trade_date=date(2026, 3, 5), category=None, score=None),
-    ]
-    result = check_missing_sentiment_result(scored)
-
-    assert result.passed is False
     assert result.failed_records == 1
 
 

@@ -1,99 +1,112 @@
-"""Investment Score: a fully explainable, rule-based 0-100 score combining
-sentiment, technical trend/momentum, sector positioning, and risk modifiers.
+"""Investment Score v2: a fully explainable, 100% quantitative 0-100 composite
+of current technical and sector alignment. NO news, NO sentiment, NO insider
+text mining: only prices, volume and positioning data.
 
-Every rule that fires appends a human-readable line to `audit_trail` - the
-score is never a black box; every point can be traced to a specific,
-named rule.
+It is a DIAGNOSTIC SNAPSHOT of how a stock looks right now, not a forecast.
+(A point-in-time backtest of the previous version found no predictive power,
+see README; v2 makes no claim to have fixed that, it only makes the picture
+cleaner and every point traceable.)
 
-Point budget (sums to exactly 100 when everything is maximally bullish):
-    Sentiment              0 to 30
-    Technical              0 to 40   (3 base rules + Seller Exhaustion bonus)
-    Positioning & Macro  -10 to 30   (Sector Flow + dynamic Short Interest rule)
-    Risk Modifiers       -30 to  0   (ATR volatility penalty, insider-selling penalty)
-Final score = sum of the above, clamped to [0, 100].
+Three pillars, one scale for every stock (same rules, same maxima):
 
-DYNAMIC NORMALIZATION: a QA backtest found that stocks with no recent news
-(the overwhelming majority of the watchlist, given how thin the RSS/FinBERT
-pipeline's coverage is) can never exceed Technical(40)+Positioning(30)=70,
-so "Strong Buy" (>70) was structurally unreachable for most of the universe
-and, when it did fire, was almost entirely a sentiment artifact rather than
-a technical/fundamental one. Rather than just lowering the UI's band
-thresholds (which papers over the real issue - a missing 30-point bucket),
-when there is NO scored sentiment in the lookback window at all, the
-Technical+Positioning base is normalized from its 70-point ceiling up to a
-100-point scale: normalized = (technical + positioning) / MAX_NO_SENTIMENT_BASE * 100.
-Risk modifiers are applied AFTER normalization, not inside it, so a -20
-insider-selling penalty always means -20 regardless of whether sentiment
-data exists. See compute_investment_score() and MAX_NO_SENTIMENT_BASE.
+    Pillar 1  Trend & moving averages          45 pts
+        price vs SMA20 (10) + vs SMA50 (10) + vs SMA200 (10) + SMA50 vs SMA200 (15)
+    Pillar 2  Momentum, RSI-14 regime          30 pts
+        healthy bullish momentum scores highest; neutral RSI gets moderate
+        points; oversold stocks that are recovering are rewarded; overbought
+        (>70) is progressively penalised so stretched stocks cannot reach 80+
+    Pillar 3  Sector & risk/short profile      25 pts
+        sector flow (10) + sector 20-day performance vs the S&P 500 (5)
+        short interest (5) + volatility vs own history (3) + insider selling (2)
+        (a typical stock earns about 7 of these 10: low-ish shorts, normal volatility, no CEO/CFO selling)
 
-Needs 200 trading days of price (SMA-200) to compute at all - see
-scripts/backfill_historical_prices.py. Returns score=None with a reason
-otherwise, rather than a number quietly computed on too little data.
+GRADED, NOT BINARY. The v1 rules were all-or-nothing ("price above SMA50: +10,
+else 0"), which scored every ordinary stock harshly. Here each moving-average
+component is a smooth ramp: HALF the points when price sits exactly on the
+average, full points a "band" above it, zero a band below. So a stock with no
+edge either way lands near the middle of every pillar, and a neutral stock
+scores about 50-55 overall. Missing data counts as neutral (half points) and
+says so in the audit trail, it never silently counts as bad.
 
-All point values/thresholds below are named constants: documented
-calibration heuristics, not a backtested model, deliberately easy to retune.
+Every rule appends a line to the audit trail (pillar, points earned, points
+possible, plain-English reason); the UI shows them all.
+
+Needs 200 trading days of price (SMA-200) to compute at all. Returns
+score=None with a reason otherwise, rather than a number computed on too
+little data. All constants are documented calibration heuristics, deliberately
+easy to retune, not a fitted model.
 """
 from dataclasses import dataclass, field
 
-SENTIMENT_LOOKBACK_DAYS = 14
+SCORE_VERSION = 2
 MIN_PRICES_FOR_SCORE = 200
 
-# --- Sentiment (0-30 pts) ---
-MAX_SENTIMENT_POINTS = 30.0
+# --- Pillar budgets (sum to exactly 100) ---
+TREND_MAX = 45.0
+MOMENTUM_MAX = 30.0
+SECTOR_MAX = 15.0
+RISK_MAX = 10.0
+PILLAR_MAX = {"trend": TREND_MAX, "momentum": MOMENTUM_MAX, "sector": SECTOR_MAX, "risk": RISK_MAX}
 
-# --- Technical (0-40 pts) ---
-POINTS_PRICE_ABOVE_SMA50 = 10.0
-POINTS_PRICE_ABOVE_SMA200 = 15.0
-POINTS_SMA20_ABOVE_SMA50 = 10.0
-POINTS_SELLER_EXHAUSTION = 5.0
-SELLER_EXHAUSTION_LOOKBACK_DAYS = 5  # trading days checked for the down-day/volume pattern
-MAX_TECHNICAL_POINTS = (
-    POINTS_PRICE_ABOVE_SMA50 + POINTS_PRICE_ABOVE_SMA200 + POINTS_SMA20_ABOVE_SMA50 + POINTS_SELLER_EXHAUSTION
-)
+# --- Pillar 1: (label, max points, band as a fraction of the average) ---
+PTS_PRICE_VS_SMA20, BAND_SMA20 = 10.0, 0.03
+PTS_PRICE_VS_SMA50, BAND_SMA50 = 10.0, 0.05
+PTS_PRICE_VS_SMA200, BAND_SMA200 = 10.0, 0.10
+PTS_SMA50_VS_SMA200, BAND_SMA_ALIGN = 15.0, 0.05
 
-# --- Positioning & Macro (-10 to 30 pts) ---
-POINTS_SECTOR_ACCUMULATION = 20.0
-POINTS_SECTOR_NEUTRAL = 10.0
-POINTS_SECTOR_DISTRIBUTION = 0.0
-SHORT_INTEREST_HIGH_THRESHOLD = 0.10  # 10% of float
-POINTS_SHORT_SQUEEZE_BONUS = 10.0
-POINTS_BEARISH_CONVICTION_PENALTY = -10.0
-# "HIGH" technical score for the short-interest rule: >= half of the 40-pt max
-TECHNICAL_HIGH_THRESHOLD = 20.0
-MAX_POSITIONING_POINTS = POINTS_SECTOR_ACCUMULATION + POINTS_SHORT_SQUEEZE_BONUS
+# --- Pillar 2: RSI -> points, piecewise linear between these nodes ---
+RSI_POINT_NODES = [
+    (0, 6.0), (20, 8.0), (30, 10.0),  # oversold: some credit, falling knives are risky
+    (40, 10.0), (45, 12.0), (50, 15.0),  # neutral: moderate points
+    (55, 24.0), (58, 30.0), (65, 30.0),  # healthy bullish momentum: full points
+    (70, 20.0), (75, 8.0), (80, 2.0), (100, 0.0),  # overbought: progressively penalised
+]
+RSI_HEALTHY_LOW, RSI_HEALTHY_HIGH = 45.0, 65.0  # the "healthy bullish" regime named in the UI
+RSI_OVERBOUGHT = 70.0
+RSI_RECOVERY_BELOW = 45.0  # an RSI under this that is rising counts as a recovery setup
+RSI_RECOVERY_MIN_RISE = 3.0  # RSI points gained over the comparison window
+RSI_RECOVERY_BONUS = 8.0
+RSI_RECOVERY_CAP = 22.0
+RSI_COMPARE_BARS = 5
 
-# When there's no sentiment data at all, Technical+Positioning is normalized
-# from this ceiling up to 100 - see the module docstring.
-MAX_NO_SENTIMENT_BASE = MAX_TECHNICAL_POINTS + MAX_POSITIONING_POINTS
-
-# --- Risk Modifiers (-30 to 0 pts) ---
-# Relative, not absolute: a flat ATR% threshold unfairly penalizes stocks
-# that are naturally volatile by nature (e.g. small-cap growth names) even
-# when they're trading calmly *for them*. Instead we compare today's ATR-14
-# against the stock's OWN trailing 90-day ATR distribution (see
-# technicals.py's ATR_ZSCORE_WINDOW) and only penalize when it's a genuine
-# outlier relative to its own history.
-ATR_ZSCORE_PENALTY_THRESHOLD = 1.5  # standard deviations above the stock's own 90-day ATR average
-POINTS_HIGH_VOLATILITY_PENALTY = -10.0  # flat penalty when triggered - never scales past this cap
-POINTS_INSIDER_SELLING_PENALTY = -20.0
+# --- Pillar 3 ---
+PTS_SECTOR_FLOW = {"Accumulation": 10.0, "Neutral": 5.0, "Distribution": 0.0}
+PTS_SECTOR_FLOW_MAX = 10.0
+PTS_SECTOR_RELATIVE_MAX = 5.0
+SECTOR_RELATIVE_BAND_PCT = 3.0  # sector 20d return vs S&P 500: +3 pts-of-percent = full, -3 = zero
+PTS_SHORT_MAX = 5.0
+SHORT_HIGH = 0.10  # fraction of float: zero short-interest points at/above this (squeeze exception below)
+PTS_SHORT_SQUEEZE = 4.0
+SQUEEZE_MIN_TREND_FRACTION = 0.6  # trend pillar share needed to read heavy shorting as a squeeze setup
+PTS_VOLATILITY_MAX = 3.0
+ATR_ZSCORE_PENALTY_THRESHOLD = 1.5  # SD above the stock's own 90-day ATR average
+PTS_INSIDER_MAX = 2.0
 INSIDER_SELLING_LOOKBACK_DAYS = 90  # how far back a CEO/CFO sale still counts as "recent"
 
-# --- "Sell the News" risk flag (informational only - does NOT affect the score) ---
-SELL_THE_NEWS_SENTIMENT_THRESHOLD = 25.0  # sentiment_points out of MAX_SENTIMENT_POINTS
-SELL_THE_NEWS_PRICE_EXTENSION_PCT = 10.0  # price this much %+ above SMA-20 counts as "overextended"
-SELL_THE_NEWS_VOLUME_CLIMAX_MULTIPLIER = 2.0  # today's volume vs. the 20-day average counts as "climaxing"
+
+@dataclass
+class ScoreItem:
+    pillar: str  # trend | momentum | sector | risk
+    points: float
+    max_points: float
+    text: str
 
 
 @dataclass
 class ScoreBreakdown:
-    score: float | None
-    sentiment_points: float | None
-    technical_points: float | None
-    positioning_points: float | None
-    risk_modifier_points: float | None
-    audit_trail: list[str] = field(default_factory=list)
+    score: float | None  # continuous 0-100 (4 dp), NOT rounded to an integer
+    trend_points: float | None = None
+    momentum_points: float | None = None
+    sector_points: float | None = None
+    risk_points: float | None = None
+    items: list[ScoreItem] = field(default_factory=list)
     flags: dict = field(default_factory=dict)
     reason: str | None = None
+    version: int = SCORE_VERSION
+
+    @property
+    def audit_trail(self) -> list[str]:
+        return [f"{i.points:.1f}/{i.max_points:.0f} pts [{i.pillar}]: {i.text}" for i in self.items]
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -107,266 +120,222 @@ def _last_non_null(values: list[float | None]) -> float | None:
     return None
 
 
-def _weighted_recent_sentiment(recent_sentiment: list[float | None]) -> float | None:
-    """Plain mean across the trailing daily (already confidence-weighted -
-    see aggregate.py) sentiment scores. None if no scored days in the window."""
-    values = [v for v in recent_sentiment if v is not None]
-    if not values:
-        return None
-    return sum(values) / len(values)
+def _ramp(distance: float, full_points: float, band: float) -> float:
+    """Half the points at distance 0, full at +band, zero at -band."""
+    return full_points * _clamp(0.5 + distance / (2 * band), 0.0, 1.0)
 
 
-def _sentiment_points(weighted_sentiment: float | None, audit: list[str]) -> float:
-    if weighted_sentiment is None:
-        audit.append("+0.0 pts: No recent sentiment data available")
-        return 0.0
-    points = _clamp((weighted_sentiment + 1) / 2 * MAX_SENTIMENT_POINTS, 0, MAX_SENTIMENT_POINTS)
-    audit.append(
-        f"+{points:.1f} pts: Weighted sentiment {weighted_sentiment:+.2f} "
-        f"(confidence-weighted avg, last {SENTIMENT_LOOKBACK_DAYS}d)"
-    )
-    return points
+def _pct(x: float) -> str:
+    return f"{x * 100:+.1f}%"
 
 
-def _seller_exhaustion(recent_closes: list[float], recent_volumes: list[int], avg_volume_20d: float | None) -> bool:
-    """True if every down-day in the recent window happened on below-average
-    volume - price falling without volume conviction, a classic bullish-
-    reversal tell."""
-    if avg_volume_20d is None or len(recent_closes) < 2:
-        return False
-    down_day_volumes = [
-        recent_volumes[i] for i in range(1, len(recent_closes)) if recent_closes[i] < recent_closes[i - 1]
-    ]
-    if not down_day_volumes:
-        return False
-    return all(v < avg_volume_20d for v in down_day_volumes)
+def rsi_points(rsi: float) -> float:
+    for (x0, y0), (x1, y1) in zip(RSI_POINT_NODES, RSI_POINT_NODES[1:]):
+        if x0 <= rsi <= x1:
+            return y0 + (y1 - y0) * (rsi - x0) / (x1 - x0)
+    return 0.0
 
 
-def _technical_points(
-    price: float,
-    sma20: float | None,
-    sma50: float | None,
-    sma200: float | None,
-    recent_closes: list[float],
-    recent_volumes: list[int],
-    avg_volume_20d: float | None,
-    audit: list[str],
-    flags: dict,
-) -> float:
-    points = 0.0
-    if sma50 is not None and price > sma50:
-        points += POINTS_PRICE_ABOVE_SMA50
-        audit.append(f"+{POINTS_PRICE_ABOVE_SMA50:.0f} pts: Price above 50-day SMA")
-    if sma200 is not None and price > sma200:
-        points += POINTS_PRICE_ABOVE_SMA200
-        audit.append(f"+{POINTS_PRICE_ABOVE_SMA200:.0f} pts: Price above 200-day SMA")
-    if sma20 is not None and sma50 is not None and sma20 > sma50:
-        points += POINTS_SMA20_ABOVE_SMA50
-        audit.append(f"+{POINTS_SMA20_ABOVE_SMA50:.0f} pts: 20-day SMA above 50-day SMA (short-term uptrend)")
+# --------------------------------------------------------------------------
+# Pillar 1: trend
+# --------------------------------------------------------------------------
+def _trend_items(price, sma20, sma50, sma200) -> list[ScoreItem]:
+    items = []
 
-    if _seller_exhaustion(recent_closes, recent_volumes, avg_volume_20d):
-        points += POINTS_SELLER_EXHAUSTION
-        flags["seller_exhaustion"] = True
-        audit.append(
-            f"+{POINTS_SELLER_EXHAUSTION:.0f} pts: Seller exhaustion detected "
-            f"(down-days in the last {SELLER_EXHAUSTION_LOOKBACK_DAYS}d all on below-average volume)"
-        )
-    return points
-
-
-def _sector_flow_points(sector_flow_status: str | None, audit: list[str]) -> float:
-    if sector_flow_status == "Accumulation":
-        audit.append(f"+{POINTS_SECTOR_ACCUMULATION:.0f} pts: Sector in Accumulation")
-        return POINTS_SECTOR_ACCUMULATION
-    if sector_flow_status == "Distribution":
-        audit.append(f"+{POINTS_SECTOR_DISTRIBUTION:.0f} pts: Sector in Distribution")
-        return POINTS_SECTOR_DISTRIBUTION
-    if sector_flow_status == "Neutral":
-        audit.append(f"+{POINTS_SECTOR_NEUTRAL:.0f} pts: Sector flow Neutral")
-        return POINTS_SECTOR_NEUTRAL
-    audit.append(f"+{POINTS_SECTOR_NEUTRAL:.0f} pts: No sector flow data available (defaulted to neutral)")
-    return POINTS_SECTOR_NEUTRAL
-
-
-def _short_interest_points(
-    short_percent_of_float: float | None, technical_points: float, audit: list[str], flags: dict
-) -> float:
-    if short_percent_of_float is None or short_percent_of_float <= SHORT_INTEREST_HIGH_THRESHOLD:
-        return 0.0
-
-    pct = short_percent_of_float * 100
-    if technical_points >= TECHNICAL_HIGH_THRESHOLD:
-        flags["short_squeeze_setup"] = True
-        audit.append(
-            f"+{POINTS_SHORT_SQUEEZE_BONUS:.0f} pts: Short Squeeze Setup - "
-            f"{pct:.1f}% short interest combined with strong technicals"
-        )
-        return POINTS_SHORT_SQUEEZE_BONUS
-
-    flags["bearish_conviction"] = True
-    audit.append(
-        f"{POINTS_BEARISH_CONVICTION_PENALTY:.0f} pts: Bearish Conviction - "
-        f"{pct:.1f}% short interest confirms weak technicals"
-    )
-    return POINTS_BEARISH_CONVICTION_PENALTY
-
-
-def _risk_modifier_points(
-    atr14: float | None,
-    atr_90d_avg: float | None,
-    atr_90d_std: float | None,
-    has_recent_executive_sale: bool,
-    audit: list[str],
-    flags: dict,
-) -> float:
-    points = 0.0
-    if atr14 is not None and atr_90d_avg is not None and atr_90d_std is not None and atr_90d_std > 0:
-        z_score = (atr14 - atr_90d_avg) / atr_90d_std
-        if z_score > ATR_ZSCORE_PENALTY_THRESHOLD:
-            points += POINTS_HIGH_VOLATILITY_PENALTY
-            flags["high_volatility"] = True
-            audit.append(
-                f"{POINTS_HIGH_VOLATILITY_PENALTY:.0f} pts: High volatility - "
-                f"ATR is {z_score:.1f} SD above historical average"
+    def vs_average(label, avg, full, band):
+        if avg is None or avg <= 0:
+            items.append(ScoreItem("trend", full / 2, full, f"{label}: no data, counted as neutral (half points)"))
+            return
+        d = price / avg - 1
+        pts = _ramp(d, full, band)
+        items.append(
+            ScoreItem(
+                "trend", pts, full,
+                f"Price {_pct(d)} vs {label} (half points on the average, full at +{band * 100:.0f}%, zero at -{band * 100:.0f}%)",
             )
-    if has_recent_executive_sale:
-        points += POINTS_INSIDER_SELLING_PENALTY
-        flags["insider_selling"] = True
-        audit.append(
-            f"{POINTS_INSIDER_SELLING_PENALTY:.0f} pts: CEO/CFO insider selling "
-            f"in the last {INSIDER_SELLING_LOOKBACK_DAYS} days"
         )
-    return points
+
+    vs_average("20-day SMA", sma20, PTS_PRICE_VS_SMA20, BAND_SMA20)
+    vs_average("50-day SMA", sma50, PTS_PRICE_VS_SMA50, BAND_SMA50)
+    vs_average("200-day SMA", sma200, PTS_PRICE_VS_SMA200, BAND_SMA200)
+
+    if sma50 is None or sma200 is None or sma200 <= 0:
+        items.append(ScoreItem("trend", PTS_SMA50_VS_SMA200 / 2, PTS_SMA50_VS_SMA200, "50/200-day SMA alignment: no data, counted as neutral"))
+    else:
+        d = sma50 / sma200 - 1
+        label = "golden-cross alignment" if d > 0 else "death-cross alignment"
+        items.append(
+            ScoreItem(
+                "trend", _ramp(d, PTS_SMA50_VS_SMA200, BAND_SMA_ALIGN), PTS_SMA50_VS_SMA200,
+                f"50-day SMA {_pct(d)} vs 200-day SMA ({label}; full at +{BAND_SMA_ALIGN * 100:.0f}%, zero at -{BAND_SMA_ALIGN * 100:.0f}%)",
+            )
+        )
+    return items
 
 
-def _check_sell_the_news(
-    sentiment_points: float,
-    price: float,
-    sma20: float | None,
-    avg_volume_20d: float | None,
-    latest_volume: int | None,
-    audit: list[str],
-    flags: dict,
-) -> None:
-    """'Buy the rumor, sell the news': a very high sentiment score combined
-    with already-overextended technicals (price far above its 20-day SMA, or
-    a volume climax) can mean the news-driven move is already exhausted.
-    Purely informational - a warning badge, never a point adjustment. Doesn't
-    run at all unless sentiment is genuinely strong, so it can't fire on the
-    normalized no-sentiment path (sentiment_points is 0 there)."""
-    if sentiment_points <= SELL_THE_NEWS_SENTIMENT_THRESHOLD:
-        return
+# --------------------------------------------------------------------------
+# Pillar 2: momentum / RSI regime
+# --------------------------------------------------------------------------
+def _momentum_items(rsi: float | None, rsi_prev: float | None, flags: dict) -> list[ScoreItem]:
+    if rsi is None:
+        return [ScoreItem("momentum", MOMENTUM_MAX / 2, MOMENTUM_MAX, "RSI-14: no data, counted as neutral (half points)")]
 
-    price_extended = (
-        sma20 is not None and sma20 > 0 and price > sma20 * (1 + SELL_THE_NEWS_PRICE_EXTENSION_PCT / 100)
-    )
-    volume_climaxing = (
-        avg_volume_20d is not None
-        and avg_volume_20d > 0
-        and latest_volume is not None
-        and latest_volume > avg_volume_20d * SELL_THE_NEWS_VOLUME_CLIMAX_MULTIPLIER
-    )
-    if not (price_extended or volume_climaxing):
-        return
+    pts = rsi_points(rsi)
+    if RSI_HEALTHY_LOW <= rsi <= RSI_HEALTHY_HIGH:
+        text = f"RSI-14 is {rsi:.1f}: healthy bullish momentum range (45-65)"
+    elif rsi > RSI_OVERBOUGHT:
+        flags["overbought_rsi"] = True
+        text = (
+            f"RSI-14 is {rsi:.1f}: overbought (above 70), so momentum is penalised "
+            f"({MOMENTUM_MAX - pts:.1f} pts lost) because stretched stocks tend to mean-revert"
+        )
+    elif rsi > RSI_HEALTHY_HIGH:
+        text = f"RSI-14 is {rsi:.1f}: strong but approaching overbought (65-70), slightly reduced"
+    elif rsi >= 30:
+        text = f"RSI-14 is {rsi:.1f}: soft to neutral momentum, moderate points"
+    else:
+        text = f"RSI-14 is {rsi:.1f}: oversold, some credit but no confirmation of a bounce"
 
-    reasons = []
-    if price_extended:
-        reasons.append(f"price {(price / sma20 - 1) * 100:.1f}% above its 20-day SMA")
-    if volume_climaxing:
-        reasons.append("volume climaxing vs. its 20-day average")
+    if rsi < RSI_RECOVERY_BELOW and rsi_prev is not None and rsi - rsi_prev >= RSI_RECOVERY_MIN_RISE:
+        boosted = min(RSI_RECOVERY_CAP, pts + RSI_RECOVERY_BONUS)
+        if boosted > pts:
+            flags["oversold_recovery"] = True
+            text = (
+                f"RSI-14 is {rsi:.1f} and rising ({rsi - rsi_prev:+.1f} over {RSI_COMPARE_BARS} bars): "
+                f"recovery setup, +{boosted - pts:.1f} pts"
+            )
+            pts = boosted
+    return [ScoreItem("momentum", pts, MOMENTUM_MAX, text)]
 
-    flags["sell_the_news_risk"] = True
-    audit.append(
-        f"⚠ Sell the News Risk: sentiment is very high ({sentiment_points:.1f}/{MAX_SENTIMENT_POINTS:.0f}) "
-        f"but {' and '.join(reasons)} - the news-driven move may already be exhausted"
-    )
+
+# --------------------------------------------------------------------------
+# Pillar 3: sector + risk/short
+# --------------------------------------------------------------------------
+def _sector_items(flow_status: str | None, sector_rel_20d_pct: float | None) -> list[ScoreItem]:
+    items = []
+    if flow_status in PTS_SECTOR_FLOW:
+        items.append(ScoreItem("sector", PTS_SECTOR_FLOW[flow_status], PTS_SECTOR_FLOW_MAX, f"Sector money-flow: {flow_status}"))
+    else:
+        items.append(ScoreItem("sector", PTS_SECTOR_FLOW_MAX / 2, PTS_SECTOR_FLOW_MAX, "Sector money-flow: no data, counted as neutral"))
+
+    if sector_rel_20d_pct is None:
+        items.append(ScoreItem("sector", PTS_SECTOR_RELATIVE_MAX / 2, PTS_SECTOR_RELATIVE_MAX, "Sector vs S&P 500 (20 days): no data, counted as neutral"))
+    else:
+        pts = _ramp(sector_rel_20d_pct, PTS_SECTOR_RELATIVE_MAX, SECTOR_RELATIVE_BAND_PCT)
+        items.append(
+            ScoreItem(
+                "sector", pts, PTS_SECTOR_RELATIVE_MAX,
+                f"Sector {sector_rel_20d_pct:+.1f} percentage points vs the S&P 500 over 20 days "
+                f"(half points when level, full at +{SECTOR_RELATIVE_BAND_PCT:.0f}, zero at -{SECTOR_RELATIVE_BAND_PCT:.0f} points)",
+            )
+        )
+    return items
+
+
+def _risk_items(trend_points, short_pct, atr14, atr_avg, atr_std, has_exec_sale, flags) -> list[ScoreItem]:
+    """Graded like the trend rules: a typical stock earns about half, a clearly
+    low-risk one approaches the maximum, a clearly risky one approaches zero."""
+    items = []
+
+    if short_pct is None:
+        items.append(ScoreItem("risk", PTS_SHORT_MAX / 2, PTS_SHORT_MAX, "Short interest: no data, counted as neutral"))
+    elif short_pct > SHORT_HIGH and trend_points >= SQUEEZE_MIN_TREND_FRACTION * TREND_MAX:
+        flags["short_squeeze_setup"] = True
+        items.append(
+            ScoreItem("risk", PTS_SHORT_SQUEEZE, PTS_SHORT_MAX, f"Short interest {short_pct * 100:.1f}% of float with a strong trend: squeeze setup")
+        )
+    elif short_pct > SHORT_HIGH:
+        flags["bearish_conviction"] = True
+        items.append(
+            ScoreItem("risk", 0.0, PTS_SHORT_MAX, f"Short interest {short_pct * 100:.1f}% of float with a weak trend: bearish conviction")
+        )
+    else:
+        pts = PTS_SHORT_MAX * (1 - short_pct / SHORT_HIGH)
+        items.append(
+            ScoreItem("risk", pts, PTS_SHORT_MAX, f"Short interest {short_pct * 100:.1f}% of float (full points at 0%, zero at {SHORT_HIGH * 100:.0f}%)")
+        )
+
+    if atr14 is None or atr_avg is None or atr_std is None or atr_std <= 0:
+        items.append(ScoreItem("risk", PTS_VOLATILITY_MAX / 2, PTS_VOLATILITY_MAX, "Volatility: not enough ATR history, counted as neutral"))
+    else:
+        z = (atr14 - atr_avg) / atr_std
+        if z > ATR_ZSCORE_PENALTY_THRESHOLD:
+            flags["high_volatility"] = True
+        pts = _ramp(-z, PTS_VOLATILITY_MAX, ATR_ZSCORE_PENALTY_THRESHOLD)
+        items.append(
+            ScoreItem(
+                "risk", pts, PTS_VOLATILITY_MAX,
+                f"Volatility: ATR is {z:+.1f} SD vs its own 90-day average "
+                f"(half points at its norm, zero at +{ATR_ZSCORE_PENALTY_THRESHOLD:.1f} SD)",
+            )
+        )
+
+    if has_exec_sale:
+        flags["insider_selling"] = True
+        items.append(ScoreItem("risk", 0.0, PTS_INSIDER_MAX, f"CEO/CFO selling in the last {INSIDER_SELLING_LOOKBACK_DAYS} days"))
+    else:
+        items.append(ScoreItem("risk", PTS_INSIDER_MAX, PTS_INSIDER_MAX, "No recent CEO/CFO selling recorded"))
+    return items
 
 
 def compute_investment_score(
     *,
     closes: list[float],
-    volumes: list[int],
     sma20_series: list[float | None],
     sma50_series: list[float | None],
     sma200_series: list[float | None],
-    recent_sentiment: list[float | None],
-    atr14: float | None,
+    rsi14: float | None,
+    rsi14_prev: float | None = None,
+    atr14: float | None = None,
     atr_90d_avg: float | None = None,
     atr_90d_std: float | None = None,
-    avg_volume_20d: float | None,
-    sector_flow_status: str | None,
-    short_percent_of_float: float | None,
-    has_recent_executive_sale: bool,
+    sector_flow_status: str | None = None,
+    sector_rel_20d_pct: float | None = None,
+    short_percent_of_float: float | None = None,
+    has_recent_executive_sale: bool = False,
 ) -> ScoreBreakdown:
-    """`closes`/`volumes`/`sma*_series` must be ordered oldest-to-newest and
-    the same length. `recent_sentiment` should be just the trailing
-    SENTIMENT_LOOKBACK_DAYS window.
-    """
+    """`closes` and the `sma*_series` are ordered oldest-to-newest; only the
+    newest values are used. `rsi14_prev` is the RSI RSI_COMPARE_BARS bars ago."""
     if len(closes) < MIN_PRICES_FOR_SCORE:
         return ScoreBreakdown(
-            score=None,
-            sentiment_points=None,
-            technical_points=None,
-            positioning_points=None,
-            risk_modifier_points=None,
-            reason=(
-                f"needs {MIN_PRICES_FOR_SCORE} trading days of price history, has {len(closes)}"
-            ),
+            score=None, reason=f"needs {MIN_PRICES_FOR_SCORE} trading days of price history, has {len(closes)}"
         )
 
-    audit: list[str] = []
     flags: dict = {}
-
     price = closes[-1]
-    sma20 = _last_non_null(sma20_series)
-    sma50 = _last_non_null(sma50_series)
-    sma200 = _last_non_null(sma200_series)
-
-    window = SELLER_EXHAUSTION_LOOKBACK_DAYS + 1
-    recent_closes = closes[-window:]
-    recent_volumes = volumes[-window:]
-
-    weighted_sentiment = _weighted_recent_sentiment(recent_sentiment)
-
-    sentiment_points = _sentiment_points(weighted_sentiment, audit)
-    technical_points = _technical_points(
-        price, sma20, sma50, sma200, recent_closes, recent_volumes, avg_volume_20d, audit, flags
-    )
-    sector_points = _sector_flow_points(sector_flow_status, audit)
-    short_interest_points = _short_interest_points(short_percent_of_float, technical_points, audit, flags)
-    positioning_points = sector_points + short_interest_points
-    risk_modifier_points = _risk_modifier_points(
-        atr14, atr_90d_avg, atr_90d_std, has_recent_executive_sale, audit, flags
+    trend = _trend_items(price, _last_non_null(sma20_series), _last_non_null(sma50_series), _last_non_null(sma200_series))
+    trend_pts = sum(i.points for i in trend)
+    momentum = _momentum_items(rsi14, rsi14_prev, flags)
+    sector = _sector_items(sector_flow_status, sector_rel_20d_pct)
+    risk = _risk_items(
+        trend_pts, short_percent_of_float, atr14, atr_90d_avg, atr_90d_std, has_recent_executive_sale, flags
     )
 
-    latest_volume = volumes[-1] if volumes else None
-    _check_sell_the_news(sentiment_points, price, sma20, avg_volume_20d, latest_volume, audit, flags)
-
-    if weighted_sentiment is None:
-        # No news at all: normalize the Technical+Positioning base up from its
-        # 70-point ceiling to 100, then apply risk modifiers on top - see the
-        # module docstring for why.
-        base = technical_points + positioning_points
-        normalized_base = base / MAX_NO_SENTIMENT_BASE * 100
-        scale = 100 / MAX_NO_SENTIMENT_BASE
-        technical_points = technical_points * scale
-        positioning_points = positioning_points * scale
-        audit.append(
-            f"Score normalized: no recent news, so the {base:.1f}/{MAX_NO_SENTIMENT_BASE:.0f}-point "
-            f"Technical + Positioning base is scaled to a /100 base ({normalized_base:.1f}) before risk modifiers"
-        )
-        raw_total = normalized_base + risk_modifier_points
-    else:
-        raw_total = sentiment_points + technical_points + positioning_points + risk_modifier_points
-
-    final_score = round(_clamp(raw_total, 0, 100))
-
+    pillars = {
+        "trend": trend_pts,
+        "momentum": sum(i.points for i in momentum),
+        "sector": sum(i.points for i in sector),
+        "risk": sum(i.points for i in risk),
+    }
     return ScoreBreakdown(
-        score=final_score,
-        sentiment_points=round(sentiment_points, 1),
-        technical_points=round(technical_points, 1),
-        positioning_points=round(positioning_points, 1),
-        risk_modifier_points=round(risk_modifier_points, 1),
-        audit_trail=audit,
+        # Continuous on purpose: rounding to an integer created 5-way ties at the
+        # top of the ranking; the UI shows one decimal and ranks on this value.
+        score=round(_clamp(sum(pillars.values()), 0, 100), 4),
+        trend_points=round(pillars["trend"], 1),
+        momentum_points=round(pillars["momentum"], 1),
+        sector_points=round(pillars["sector"], 1),
+        risk_points=round(pillars["risk"], 1),
+        items=trend + momentum + sector + risk,
         flags=flags,
     )
+
+
+def signal_label(score: float | None) -> str | None:
+    """Diagnostic band names (never predictive wording). Mirrored in the UI."""
+    if score is None:
+        return None
+    if score >= 70:
+        return "Strong Signal"
+    if score >= 45:
+        return "Neutral / Mixed"
+    return "Weak Signal"

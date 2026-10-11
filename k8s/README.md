@@ -16,8 +16,8 @@ applied to a real cluster yet** - expect to fix small things on first contact.
 | `postgres-statefulset.yaml` | Postgres 16 (digest-pinned), **15Gi `local-path` PVC**, probes, non-root |
 | `migrate-job.yaml` | migrations + dimension seed (re-create on every image bump) |
 | `webapp-deployment.yaml` | 2 replicas, PDB, GHCR image, probes, limits |
-| `eod-update-cronjob.yaml` | weekdays 17:30 ET pipeline |
-| `backup-cronjob.yaml` | nightly `pg_dump` -> S3-compatible bucket (digest-pinned images) |
+| `eod-update-cronjob.yaml` | full refresh 09:00 / 15:00 / 23:00 Israel time, daily |
+| `backup-cronjob.yaml` | nightly `pg_dump` (02:00 Israel) -> S3-compatible bucket (digest-pinned images) |
 | `clusterissuer.yaml` | Let's Encrypt staging + prod |
 | `ingress.yaml` | main Ingress (TLS) + rate-limited refresh Ingress |
 
@@ -25,8 +25,8 @@ Images: `ghcr.io/liormym/marketpulse-{webapp,pipeline}:sha-ae66c0f-amd64` (CI ru
 
 ## Cluster prerequisites (one-time, not managed here)
 
-1. **VM**: amd64 (the images are amd64 only), >= 8 GB RAM recommended. Requests add up to ~3.3 GiB
-   (2x webapp 768Mi, Postgres 512Mi, EOD 1.25Gi); the EOD run peaks at ~1-2 GiB on top of the webapps.
+1. **VM**: amd64 (the images are amd64 only), 4 GB RAM is enough. Requests add up to ~1.2 GiB
+   (2x webapp 192Mi, Postgres 512Mi, EOD 256Mi); the full update measured a 196 MB peak RSS locally.
 2. **k3s without Traefik**: install with `--disable=traefik`. Keep the embedded network-policy controller enabled (the default).
 3. **ingress-nginx** with real client IPs and a proper 429:
    ```yaml
@@ -99,7 +99,7 @@ pg_restore -h localhost -U marketpulse -d marketpulse --clean --if-exists --no-o
 ## Hardening backlog
 
 - `readOnlyRootFilesystem` is on only for the backup uploader. The app images are not yet proven to run read-only
-  (HF/torch cache paths); add `--read-only --tmpfs /tmp` to the CI smoke tests first, then enable it.
+  (pandas/yfinance temp and cache paths; there is no ML stack any more); add `--read-only --tmpfs /tmp` to the CI smoke tests first, then enable it.
 - Add ephemeral-storage requests/limits; image-pull policy is `IfNotPresent` (tags are immutable per commit).
 - Trivy scan in CI; Argo CD/Flux instead of manual `kubectl apply -k`.
 - Yahoo Finance may throttle a cloud VM's egress IP; watch the first EOD runs.

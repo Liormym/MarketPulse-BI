@@ -60,11 +60,8 @@ jobs:
           test -n "$webapp" && test "$webapp" = "$pipeline"
           echo "$webapp" | grep -q '@sha256:'
 
-      - name: Install dependencies (CPU-only torch, same as the images)
-        run: |
-          pip install "torch==2.3.1+cpu" \
-            --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
-          pip install -r requirements-dev.txt
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
 
       - name: Migrate and seed the database
         run: |
@@ -140,18 +137,14 @@ jobs:
           size=$(docker image inspect marketpulse-${{ matrix.image }}:ci --format '{{.Size}}')
           echo "### ${{ matrix.image }} image: $(( size / 1024 / 1024 )) MiB" >> "$GITHUB_STEP_SUMMARY"
 
-      # --network none: proves FinBERT loads from the baked-in cache and the
-      # image never reaches out to Hugging Face at runtime.
-      - name: Smoke test - non-root, CPU torch, FinBERT works offline
+      # --network none: the image must run with no outbound access at startup.
+      - name: Smoke test - runs as non-root and imports its dependencies
         run: |
           docker run --rm --network none marketpulse-${{ matrix.image }}:ci python -c "
-          import os, torch
+          import os
           assert os.getuid() == 10001, f'expected uid 10001, got {os.getuid()}'
-          assert '+cpu' in torch.__version__ and torch.version.cuda is None, torch.__version__
-          from marketpulse.sentiment.finbert import classify
-          result = classify('Company reports record profits and raises full-year guidance')
-          print(torch.__version__, result)
-          assert result is not None and result.category == 'Positive', result
+          import pandas, numpy, sqlalchemy, yfinance, feedparser
+          print('ok, uid', os.getuid())
           "
 
       - name: Smoke test - webapp starts in production mode

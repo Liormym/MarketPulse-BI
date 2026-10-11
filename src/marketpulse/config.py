@@ -31,7 +31,6 @@ class Settings(BaseSettings):
     news_max_workers: int = 8
     price_max_workers: int = 8
     outbound_min_interval_seconds: float = 0.25
-    finbert_model_name: str = "ProsusAI/finbert"
 
     @model_validator(mode="after")
     def _real_db_password_in_production(self):

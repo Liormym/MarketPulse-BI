@@ -9,9 +9,11 @@
 //  - /api/* (GET only): same network-first policy as navigations.
 //  - Anything non-GET (the refresh endpoint is POST) is never intercepted.
 //
+// CSS/JS are requested with a content hash (?v=...) by the templates, so a changed
+// file is a different URL and a page can never run against stale assets.
 // Bump CACHE_VERSION on any change to this file's caching behavior, or to
 // SHELL_ASSETS, so old clients pick up the new strategy on next load.
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v4";
 const SHELL_CACHE = `marketpulse-shell-${CACHE_VERSION}`;
 const API_CACHE = `marketpulse-api-${CACHE_VERSION}`;
 const CURRENT_CACHES = [SHELL_CACHE, API_CACHE];
@@ -19,9 +21,6 @@ const CURRENT_CACHES = [SHELL_CACHE, API_CACHE];
 const SHELL_ASSETS = [
   "/",
   "/manifest.json",
-  "/static/css/style.css",
-  "/static/js/dashboard.js",
-  "/static/js/stock_detail.js",
   "/static/icons/icon-192.png",
   "/static/icons/icon-512.png",
   "/static/icons/apple-touch-icon.png",

@@ -6,7 +6,7 @@
   <title>MarketPulse BI — Market Dashboard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <link rel="stylesheet" href="{{ asset_url('css/style.css') }}">
 
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#090b10">
@@ -18,7 +18,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="MarketPulse">
 
-  <script src="{{ url_for('static', filename='js/register-sw.js') }}" defer></script>
+  <script src="{{ asset_url('js/register-sw.js') }}" defer></script>
 </head>
 <body>
   <div class="app">
@@ -37,14 +37,32 @@
 
     <div class="ticker-tape" id="ticker-tape"></div>
 
+    <div class="freshness-strip" id="freshness-strip" aria-live="polite">
+      <div class="freshness-main">
+        <span class="freshness-dot" id="freshness-dot"></span>
+        <span id="freshness-eod">Checking data freshness…</span>
+        <span class="freshness-next" id="freshness-next"></span>
+      </div>
+      <details class="freshness-details">
+        <summary>Details</summary>
+        <ul class="freshness-list" id="freshness-list"></ul>
+      </details>
+    </div>
+
     <main class="content">
+      <section class="market-brief" id="market-brief" hidden aria-label="Daily Macro Brief">
+        <div class="market-brief-label">Daily Macro Brief <span class="market-brief-asof" id="market-brief-asof"></span></div>
+        <p class="market-brief-text" id="market-brief-text"></p>
+      </section>
+
       <div id="macro-risk-banner" class="macro-risk-banner hidden">
         <span class="macro-risk-icon">⚠</span>
         <span><strong>High Market Pressure:</strong> US Treasuries or Crude Oil are elevated, historically carrying higher systemic risk for equities.</span>
       </div>
 
       <section class="panel strong-buys-panel">
-        <div class="panel-header"><h2>🚀 Top 5 Strong Buys</h2></div>
+        <div class="panel-header"><h2>📊 Top 5 Highest Signals <span class="info-dot" title="The score is a diagnostic snapshot of current technical and sector alignment (trend, momentum, sector flow, risk). It is not a forecast and not investment advice.">ⓘ</span></h2><span class="freshness-badge" id="scores-asof"></span></div>
+        <p class="score-note">The score is a diagnostic snapshot of current technical and sector alignment (trend, momentum, sector flow, risk). It is not a forecast and not investment advice.</p>
         <div class="strong-buys-grid" id="strong-buys-grid">
           <div class="empty-state">Loading…</div>
         </div>
@@ -85,7 +103,7 @@
       </section>
 
       <section class="panel">
-        <div class="panel-header"><h2>Top Movers</h2></div>
+        <div class="panel-header"><h2>Top Movers</h2><span class="freshness-badge" id="movers-asof"></span></div>
         <div class="movers-grid" id="movers-grid">
           <div class="empty-state">Loading…</div>
         </div>
@@ -97,6 +115,7 @@
     </footer>
   </div>
 
-  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+  <script src="{{ asset_url('js/freshness.js') }}"></script>
+  <script src="{{ asset_url('js/dashboard.js') }}"></script>
 </body>
 </html>

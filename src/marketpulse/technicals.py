@@ -240,4 +240,7 @@ def compute_and_upsert_technicals_for_asset(conn, asset_key: int) -> int:
                 "rsi14": t.rsi14,
             },
         )
+    from .load.freshness import mark_stocks
+
+    mark_stocks(conn, [asset_key], "technicals")
     return len(rows)

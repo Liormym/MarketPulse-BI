@@ -1,3 +1,5 @@
+> **Note:** sentiment was removed from MarketPulse (no FinBERT, no daily sentiment scoring). `FactSentiment` and the `vw_*Sentiment*` views below are **frozen history**; they stop updating after 2026-10-11. Use the price/technicals views for anything current.
+
 # Power BI layer
 
 Power BI Desktop is a proprietary GUI app — nothing here can generate or edit a

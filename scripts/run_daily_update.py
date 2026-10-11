@@ -8,8 +8,8 @@ the right order, on a schedule.
 
 Step order (each step's output is the next step's input):
   1. fetch_macro_indicators.py    - 10Y/2Y/oil/BTC/KOSPI/S&P500/NASDAQ/RSP
-  2. marketpulse.pipeline         - fresh prices (+ news + FinBERT
-                                     sentiment) for every watchlist ticker,
+  2. marketpulse.pipeline         - fresh prices and company news
+                                     headlines for every watchlist ticker,
                                      trailing window (see that module's
                                      docstring - NOT the one-time full
                                      historical backfill)
@@ -21,6 +21,9 @@ Step order (each step's output is the next step's input):
   5. compute_investment_scores.py - Investment Score for every ticker,
                                      from steps 2-4's output (technicals,
                                      sector flow, price/volume)
+  6. generate_market_brief.py     - rule-based Daily Macro Brief (1-2
+                                     sentences) from the fresh macro,
+                                     sector and breadth data
 
 Each step runs as its own subprocess (matching how it's documented to be
 run standalone) and the pipeline STOPS on the first failing step rather
@@ -42,11 +45,26 @@ PYTHON = sys.executable
 
 STEPS = [
     ("Fetch macro indicators", [PYTHON, str(ROOT / "scripts" / "fetch_macro_indicators.py")]),
-    ("Fetch fresh prices/news/sentiment", [PYTHON, "-m", "marketpulse.pipeline"]),
+    ("Fetch fresh prices and news", [PYTHON, "-m", "marketpulse.pipeline"]),
     ("Recompute technicals (SMA/ATR/gap)", [PYTHON, str(ROOT / "scripts" / "compute_stock_technicals.py")]),
     ("Compute sector flows", [PYTHON, str(ROOT / "scripts" / "compute_sector_flows.py")]),
     ("Compute investment scores", [PYTHON, str(ROOT / "scripts" / "compute_investment_scores.py")]),
+    ("Generate daily macro brief", [PYTHON, str(ROOT / "scripts" / "generate_market_brief.py")]),
 ]
+
+
+def _record_success() -> None:
+    """Stamps "the last fully successful EOD update" (shown in the UI). Written
+    only after EVERY step succeeded; a failure here must not fail the update."""
+    try:
+        sys.path.insert(0, str(ROOT / "src"))
+        from marketpulse.load.db import get_engine
+        from marketpulse.load.freshness import mark_source
+
+        with get_engine().begin() as conn:
+            mark_source(conn, "eod_update")
+    except Exception as exc:  # noqa: BLE001
+        print(f"warning: could not record EOD completion time: {exc}", flush=True)
 
 
 def main() -> None:
@@ -72,6 +90,7 @@ def main() -> None:
 
         print(f"--- Step {i} done in {elapsed:.1f}s ---", flush=True)
 
+    _record_success()
     total = time.monotonic() - started
     print(f"\n=== EOD update finished successfully in {total:.1f}s ===", flush=True)
 

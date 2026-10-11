@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sqlalchemy import text  # noqa: E402
 
 from marketpulse.load.db import get_engine  # noqa: E402
+from marketpulse.load.freshness import mark_source  # noqa: E402
 from marketpulse.sector_flow import SECTOR_SPDR_TICKERS, compute_daily_flows  # noqa: E402
 
 
@@ -81,6 +82,8 @@ def main() -> None:
             total_rows += len(rows)
             print(f"{ticker}: {len(rows)} rows computed")
 
+    with engine.begin() as conn:
+        mark_source(conn, "sector_flows")
     print(f"Total FactSectorVolume rows upserted: {total_rows}")
 
 

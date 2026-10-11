@@ -1,6 +1,6 @@
-# Single end-of-day job. Runs scripts/run_daily_update.py, which executes the
-# five EOD steps in dependency order and stops at the first failure:
-#   macro -> prices/news/sentiment -> technicals -> sector flows -> scores
+# Full data refresh, three times a day (09:00, 15:00, 23:00 Israel time). Runs scripts/run_daily_update.py, which executes the
+# six EOD steps in dependency order and stops at the first failure:
+#   macro -> prices/news/sentiment -> technicals -> sector flows -> scores -> macro brief
 # Replaces the former independent pipeline and derived-data CronJobs, which
 # could recompute on stale upstream data after a failed run.
 apiVersion: batch/v1
@@ -9,8 +9,8 @@ metadata:
   name: marketpulse-eod-update
   namespace: marketpulse
 spec:
-  schedule: "30 17 * * 1-5"
-  timeZone: "America/New_York" # 17:30 ET, 90 minutes after the 16:00 close; stays aligned across DST
+  schedule: "0 9,15,23 * * *"
+  timeZone: "Asia/Jerusalem" # 09:00, 15:00, 23:00 Israel time, every day; follows Israel's DST (see src/marketpulse/schedule.py)
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 900
   successfulJobsHistoryLimit: 3
@@ -52,7 +52,7 @@ spec:
               resources:
                 requests:
                   cpu: "500m"
-                  memory: "1280Mi" # local pipeline step peaked at ~1.08 GB RSS with FinBERT loaded
+                  memory: "256Mi" # measured peak RSS of the whole 6-step run: 196 MB (was ~1.1 GB while FinBERT was loaded)
                 limits:
                   cpu: "2"
-                  memory: "2Gi"
+                  memory: "512Mi"

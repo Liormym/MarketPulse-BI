@@ -6,7 +6,7 @@
   <title>MarketPulse BI — Stock Deep-Dive</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <link rel="stylesheet" href="{{ asset_url('css/style.css') }}">
 
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#090b10">
@@ -18,7 +18,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="MarketPulse">
 
-  <script src="{{ url_for('static', filename='js/register-sw.js') }}" defer></script>
+  <script src="{{ asset_url('js/register-sw.js') }}" defer></script>
 </head>
 <body>
   <div class="app">
@@ -62,10 +62,11 @@
             <span class="hero-price" id="hero-price"></span>
             <span class="hero-change" id="hero-change"></span>
           </div>
+          <div class="hero-freshness" id="hero-freshness"></div>
         </div>
 
         <div class="score-card" id="score-card">
-          <div class="score-label">Investment Score</div>
+          <div class="score-label" title="The score is a diagnostic snapshot of current technical and sector alignment (trend, momentum, sector flow, risk). It is not a forecast and not investment advice.">Investment Score <span class="info-dot" aria-hidden="true">ⓘ</span></div>
           <div class="score-value" id="score-value">—</div>
           <div class="score-tag" id="score-tag">—</div>
         </div>
@@ -73,7 +74,7 @@
 
       <section class="chart-panel">
         <div class="chart-panel-header">
-          <h2>Price, SMAs &amp; Sentiment</h2>
+          <h2>Price &amp; SMAs</h2>
           <div class="chart-header-actions">
             <button id="refresh-btn" class="refresh-btn" title="Live re-fetch price, news &amp; technicals for this ticker (5 per hour)">
               <span id="refresh-btn-label">🔄 Refresh Data</span>
@@ -92,7 +93,7 @@
         </div>
         <div id="refresh-message" class="refresh-message"></div>
         <div class="chart-wrap">
-          <canvas id="price-sentiment-chart"></canvas>
+          <canvas id="price-chart"></canvas>
         </div>
         <div class="chart-wrap chart-wrap-volume">
           <canvas id="volume-chart"></canvas>
@@ -147,18 +148,36 @@
 
       <section class="panel">
         <div class="panel-header"><h2>Score Rationale &amp; Raw Data</h2></div>
+        <p class="score-note">The score is a diagnostic snapshot of current technical and sector alignment (trend, momentum, sector flow, risk). It is not a forecast and not investment advice.</p>
         <div id="score-badges" class="score-badges"></div>
         <div class="score-subscores" id="score-subscores"></div>
         <ul class="audit-trail" id="audit-trail"></ul>
       </section>
+
+      <section class="panel" id="freshness-panel">
+        <div class="panel-header"><h2>Data Freshness</h2><span class="freshness-badge" id="freshness-summary"></span></div>
+        <table class="freshness-table">
+          <tbody id="freshness-rows"></tbody>
+        </table>
+        <div class="metric-footnote" id="freshness-note"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header"><h2>Recent Company News</h2><span class="freshness-badge">latest headlines naming this company</span></div>
+        <ul class="driver-list" id="recent-news">
+          <li class="empty-state">Loading…</li>
+        </ul>
+        <div class="metric-footnote">News is shown for context only. It does not affect the Investment Score.</div>
+      </section>
     </main>
 
     <footer class="footer">
-      <span>Live price, sentiment &amp; technicals from PostgreSQL · Investment Score: fully rule-based and explainable — see the rationale panel above</span>
+      <span>Live price, news &amp; technicals from PostgreSQL · Investment Score: fully rule-based and explainable — see the rationale panel above</span>
     </footer>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-  <script src="{{ url_for('static', filename='js/stock_detail.js') }}"></script>
+  <script src="{{ asset_url('js/freshness.js') }}"></script>
+  <script src="{{ asset_url('js/stock_detail.js') }}"></script>
 </body>
 </html>

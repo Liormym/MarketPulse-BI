@@ -25,8 +25,8 @@ def test_results_follow_asset_order(monkeypatch):
     monkeypatch.setattr(news_module, "OUTBOUND_LIMITER", SharedRateLimiter(0))
     monkeypatch.setattr(
         news_module,
-        "fetch_news_for_ticker",
-        lambda ticker, company, limit: [_record(ticker)],
+        "fetch_news_for_ticker_status",
+        lambda ticker, company, limit: ([_record(ticker)], True),
     )
     assets = _assets(10)
 
@@ -50,9 +50,9 @@ def test_concurrency_is_bounded_by_news_max_workers(monkeypatch):
         time.sleep(0.02)
         with lock:
             in_flight -= 1
-        return [_record(ticker)]
+        return [_record(ticker)], True
 
-    monkeypatch.setattr(news_module, "fetch_news_for_ticker", slow_fetch)
+    monkeypatch.setattr(news_module, "fetch_news_for_ticker_status", slow_fetch)
 
     records = fetch_news(_assets(12))
 
@@ -66,12 +66,29 @@ def test_one_crashing_ticker_does_not_abort_the_run(monkeypatch):
     def flaky_fetch(ticker, company, limit):
         if ticker == "T002":
             raise RuntimeError("feed parser exploded")
-        return [_record(ticker)]
+        return [_record(ticker)], True
 
-    monkeypatch.setattr(news_module, "fetch_news_for_ticker", flaky_fetch)
+    monkeypatch.setattr(news_module, "fetch_news_for_ticker_status", flaky_fetch)
 
     records = fetch_news(_assets(5))
 
     tickers = [r.ticker for r in records]
     assert "T002" not in tickers
     assert tickers == ["T000", "T001", "T003", "T004"]
+
+
+def test_status_reports_which_tickers_had_a_reachable_feed(monkeypatch):
+    monkeypatch.setattr(news_module, "OUTBOUND_LIMITER", SharedRateLimiter(0))
+
+    def fake(ticker, company, limit):
+        if ticker == "T001":
+            return [], False  # every feed failed
+        if ticker == "T002":
+            return [], True  # feeds reached, nothing relevant
+        return [_record(ticker)], True
+
+    monkeypatch.setattr(news_module, "fetch_news_for_ticker_status", fake)
+    records, reached = news_module.fetch_news_status(_assets(4))
+
+    assert reached == {"T000", "T002", "T003"}
+    assert [r.ticker for r in records] == ["T000", "T003"]

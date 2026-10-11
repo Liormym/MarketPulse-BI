@@ -1,21 +1,24 @@
 """MarketPulse BI — Flask front-end. Two screens:
 
   /              Market Risk & Macro Dashboard (yields, oil, sector flows, top movers)
-  /stock/<ticker>  Stock deep-dive (price/sentiment chart, technicals, positioning, macro alignment)
+  /stock/<ticker>  Stock deep-dive (price chart, technicals, positioning, macro alignment)
 
 The Investment Score (marketpulse.scoring) is a fully explainable, rule-based
 score - see that module for the point budget and every rule it applies.
 Pattern-detection hints (marketpulse.pattern_detection) are surfaced
 alongside it but are NOT part of that score - see that module's docstring.
 """
+import hashlib
 import sys
+from datetime import date, datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 SRC_PATH = str(Path(__file__).resolve().parents[1] / "src")
 if SRC_PATH not in sys.path:
     sys.path.insert(0, SRC_PATH)
 
-from flask import Flask, Response, jsonify, render_template, session  # noqa: E402
+from flask import Flask, Response, jsonify, render_template, session, url_for  # noqa: E402
 
 import db  # noqa: E402
 from app_security import configure_app  # noqa: E402
@@ -23,11 +26,32 @@ from marketpulse.config import settings  # noqa: E402
 from marketpulse.live_refresh import refresh_ticker  # noqa: E402
 from marketpulse.load.db import get_engine  # noqa: E402
 from marketpulse.pattern_detection import detect_patterns  # noqa: E402
-from marketpulse.scoring import compute_investment_score  # noqa: E402
+from marketpulse.scoring import PILLAR_MAX, compute_investment_score, signal_label  # noqa: E402
 from marketpulse.technicals import RSI_OVERBOUGHT, RSI_OVERSOLD, describe_gap, describe_rsi  # noqa: E402
 from rate_limit import check_and_record_refresh  # noqa: E402
 
 app = Flask(__name__)
+
+
+@lru_cache(maxsize=256)
+def _asset_hash(path: str, mtime_ns: int) -> str:
+    return hashlib.sha1(Path(path).read_bytes()).hexdigest()[:10]
+
+
+@app.context_processor
+def _asset_helpers():
+    def asset_url(filename: str) -> str:
+        """URL of a static file with a content hash (?v=...). A changed file gets a
+        new URL, so no browser or service-worker cache can ever pair a new page
+        with stale CSS/JS (the old files simply stop being requested)."""
+        path = Path(app.static_folder) / filename
+        try:
+            version = _asset_hash(str(path), path.stat().st_mtime_ns)
+        except OSError:
+            return url_for("static", filename=filename)
+        return url_for("static", filename=filename, v=version)
+
+    return {"asset_url": asset_url}
 configure_app(app, settings)
 
 
@@ -88,6 +112,16 @@ def api_macro():
     return jsonify(db.get_macro_snapshot() or {})
 
 
+@app.route("/api/market-brief")
+def api_market_brief():
+    return jsonify(db.get_market_brief() or {})
+
+
+@app.route("/api/freshness")
+def api_freshness():
+    return jsonify(db.get_freshness())
+
+
 @app.route("/api/sector-flows")
 def api_sector_flows():
     return jsonify(db.get_sector_flows())
@@ -117,7 +151,7 @@ def api_tickers():
 @app.route("/api/stock/<ticker>")
 def api_stock(ticker: str):
     ticker = ticker.upper()
-    data = db.get_price_sentiment_history(ticker)
+    data = db.get_price_history(ticker)
     if data is None:
         return jsonify({"error": f"Unknown ticker '{ticker}'"}), 404
 
@@ -131,16 +165,32 @@ def api_stock(ticker: str):
     enrichment = db.enrich_stock(ticker)
     data["fundamentals"] = (enrichment or {}).pop("fundamentals", None)
     data["enrichment"] = enrichment
+    data["recent_news"] = db.get_recent_news(ticker)
+    data["freshness"] = db.get_stock_freshness(
+        db.get_asset_key(ticker), date.fromisoformat(data["dates"][-1]) if data["dates"] else None
+    )
     data["rsi_state"] = describe_rsi(data["rsi14"])
     data["rsi_thresholds"] = {"oversold": RSI_OVERSOLD, "overbought": RSI_OVERBOUGHT}
 
     breakdown = compute_investment_score(**db.build_score_kwargs(data, sector_flow, enrichment))
     data["score"] = breakdown.score
     data["score_detail"] = {
-        "sentiment_points": breakdown.sentiment_points,
-        "technical_points": breakdown.technical_points,
-        "positioning_points": breakdown.positioning_points,
-        "risk_modifier_points": breakdown.risk_modifier_points,
+        "version": breakdown.version,
+        "score": breakdown.score,
+        "signal": signal_label(breakdown.score),
+        "pillars": [
+            {"key": key, "name": name, "points": points, "max": PILLAR_MAX[key]}
+            for key, name, points in (
+                ("trend", "Trend & Moving Averages", breakdown.trend_points),
+                ("momentum", "Momentum & RSI-14", breakdown.momentum_points),
+                ("sector", "Sector Momentum", breakdown.sector_points),
+                ("risk", "Short & Risk Profile", breakdown.risk_points),
+            )
+        ],
+        "items": [
+            {"pillar": i.pillar, "points": round(i.points, 1), "max": i.max_points, "text": i.text}
+            for i in breakdown.items
+        ],
         "audit_trail": breakdown.audit_trail,
         "flags": breakdown.flags,
         "reason": breakdown.reason,
@@ -202,6 +252,7 @@ def api_stock_refresh(ticker: str):
             "price_rows": result.price_rows,
             "articles_fetched": result.articles_fetched,
             "technicals_rows": result.technicals_rows,
+            "refreshed_at": datetime.now(timezone.utc).isoformat(),
             "remaining_refreshes": remaining,
         }
     )

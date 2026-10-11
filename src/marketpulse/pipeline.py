@@ -9,12 +9,13 @@ from datetime import date
 
 from sqlalchemy import text
 
-from .aggregate import ScoredArticle, aggregate_daily_sentiment
-from .extract.news import fetch_news
+from .extract.news import fetch_news_status
 from .extract.prices import fetch_prices
 from .load.db import get_engine
-from .load.upsert import get_asset_key_map, upsert_daily_prices, upsert_daily_sentiment, upsert_news_articles
+from .load.freshness import mark_source, mark_stocks
+from .load.upsert import get_asset_key_map, upsert_daily_prices, upsert_news_articles
 from .logging_utils import configure_logging, log_stage, write_dq_results
+from .recent_news import refresh_recent_news
 from .quality.checks import (
     check_date_out_of_range,
     check_duplicate_news,
@@ -22,11 +23,9 @@ from .quality.checks import (
     check_invalid_empty_headlines,
     check_invalid_numeric_values,
     check_missing_date,
-    check_missing_sentiment_result,
     check_missing_ticker,
 )
 from .raw_storage import save_raw
-from .sentiment.finbert import classify
 from .transform import clean_headline
 from .validation import is_valid_news, is_valid_price
 
@@ -61,7 +60,7 @@ def run(lookback_days: int = 5) -> uuid.UUID:
         # --- Extract ---
         with log_stage(conn, run_id, "Extract") as stage_result:
             price_records, failed_price_tickers = fetch_prices(tickers, lookback_days=lookback_days)
-            news_records = fetch_news(assets)
+            news_records, news_reached = fetch_news_status(assets)
             save_raw(today, "prices", [r.__dict__ for r in price_records])
             save_raw(today, "news", [r.__dict__ for r in news_records])
             stage_result["records_processed"] = len(price_records) + len(news_records)
@@ -101,38 +100,25 @@ def run(lookback_days: int = 5) -> uuid.UUID:
             ]
             stage_result["records_processed"] = len(price_records) + len(news_records)
 
-        # --- Sentiment Analysis ---
-        with log_stage(conn, run_id, "AI") as stage_result:
-            scored_articles = []
-            for r in news_records:
-                result = classify(r.title)
-                r.category = result.category if result else None
-                r.score = result.score if result else None
-                scored_articles.append(
-                    ScoredArticle(
-                        ticker=r.ticker,
-                        trade_date=r.published_at.date(),
-                        category=r.category,
-                        score=r.score,
-                    )
-                )
-            dq_missing_sentiment = check_missing_sentiment_result(scored_articles)
-            all_dq_results.append(dq_missing_sentiment)
-            stage_result["records_processed"] = len(scored_articles)
-
-        # --- Aggregation ---
-        with log_stage(conn, run_id, "Aggregate") as stage_result:
-            daily_sentiment = aggregate_daily_sentiment(scored_articles)
-            stage_result["records_processed"] = len(daily_sentiment)
-
         # --- Load (idempotent) ---
         with log_stage(conn, run_id, "Load") as stage_result:
             asset_keys = get_asset_key_map(conn)
             n_prices = upsert_daily_prices(conn, price_records, asset_keys)
             n_news = upsert_news_articles(conn, news_records, asset_keys)
-            n_sentiment = upsert_daily_sentiment(conn, daily_sentiment, asset_keys)
+            # Latest headlines that explicitly name each ticker, from everything stored
+            # in the lookback window (not just this run's fetch).
+            n_news_items = refresh_recent_news(conn, list(asset_keys.values()))
+            # Freshness is advanced only for tickers whose upstream fetch actually
+            # worked, and only now that their rows are written.
+            mark_stocks(conn, [asset_keys[t] for t in valid_tickers - set(failed_price_tickers) if t in asset_keys], "prices", "eod")
+            mark_stocks(conn, [asset_keys[t] for t in news_reached if t in asset_keys], "news", "eod")
+            if price_records:
+                mark_source(conn, "prices")
+            if news_reached:
+                mark_source(conn, "news")
             conn.commit()
-            stage_result["records_processed"] = n_prices + n_news + n_sentiment
+            log.info("recent-news panel refreshed: %d rows", n_news_items)
+            stage_result["records_processed"] = n_prices + n_news
 
         # --- Data Quality Checks (persist results) ---
         with log_stage(conn, run_id, "DataQuality") as stage_result:

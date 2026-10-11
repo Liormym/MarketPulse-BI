@@ -34,7 +34,10 @@ async function loadMacro() {
 
   const asOfEl = document.getElementById("macro-asof");
   if (asOfEl) {
-    asOfEl.textContent = data.as_of ? `Live as of: ${data.as_of}` : "";
+    // as_of is the market date of the newest reading (FRED yields trail by a day);
+    // the fetch time comes from loadFreshness().
+    asOfEl.dataset.reading = data.as_of || "";
+    paintMacroAsOf();
   }
 
   document.getElementById("macro-10y").textContent = fmtPct(data.ten_year_yield);
@@ -96,7 +99,8 @@ async function loadSectorFlows() {
     return;
   }
 
-  document.getElementById("sector-asof").textContent = `as of ${rows[0].as_of}`;
+  sectorBarDate = rows[0].as_of;
+  paintSectorAsOf();
   renderSectorLeaderBanner(rows);
 
   tbody.innerHTML = rows
@@ -191,12 +195,114 @@ async function loadStrongBuys() {
         <div class="strong-buy-rank">#${i + 1}</div>
         <div class="strong-buy-ticker">${r.ticker}</div>
         <div class="strong-buy-name">${r.name}</div>
-        <div class="strong-buy-score">${r.score}</div>
+        <div class="strong-buy-score" title="Exact score ${r.score_exact}">${r.score.toFixed(1)}</div>
       </a>`
     )
     .join("");
 }
 
+async function loadMarketBrief() {
+  const el = document.getElementById("market-brief");
+  if (!el) return;
+  try {
+    const res = await fetch("/api/market-brief");
+    const data = await res.json();
+    if (!data.brief) return; // nothing generated yet: keep the card hidden
+    document.getElementById("market-brief-text").textContent = data.brief;
+    const asOf = document.getElementById("market-brief-asof");
+    asOf.dataset.marketDate = data.as_of;
+    Freshness.stamp(asOf, data.generated_at, { label: `market date ${data.as_of} · generated` });
+    el.hidden = false;
+  } catch (err) {
+    console.warn("market brief unavailable", err);
+  }
+}
+
+let freshnessData = null;
+let sectorBarDate = "";
+
+function paintMacroAsOf() {
+  const el = document.getElementById("macro-asof");
+  if (!el || !freshnessData) return;
+  const f = freshnessData.sources.macro;
+  Freshness.stamp(el, f.refreshed_at, { label: `latest reading ${el.dataset.reading || "—"} · fetched`, overdue: f.overdue });
+}
+
+function paintSectorAsOf() {
+  const el = document.getElementById("sector-asof");
+  if (!el || !freshnessData) return;
+  const f = freshnessData.sources.sector_flows;
+  Freshness.stamp(el, f.refreshed_at, { label: `bar ${sectorBarDate || "—"} · computed`, overdue: f.overdue });
+}
+
+const SOURCE_LABELS = [
+  ["eod_update", "Last full update (all steps succeeded)"],
+  ["prices", "Prices (scheduled runs)"],
+  ["news", "News headlines (scheduled runs)"],
+  ["macro", "Macro indicators"],
+  ["sector_flows", "Sector flows"],
+  ["scores", "Investment Scores"],
+  ["brief", "Daily Macro Brief"],
+];
+
+async function loadFreshness() {
+  try {
+    const res = await fetch("/api/freshness");
+    const f = await res.json();
+    Freshness.syncServerClock(f.server_now);
+    freshnessData = f;
+
+    const eod = f.sources.eod_update;
+    const dot = document.getElementById("freshness-dot");
+    dot.className = `freshness-dot ${eod.refreshed_at && !eod.overdue ? "ok" : "stale"}`;
+    Freshness.stamp(document.getElementById("freshness-eod"), eod.refreshed_at, {
+      label: "Last full update:",
+      overdue: eod.overdue,
+    });
+    const next = document.getElementById("freshness-next");
+    next.dataset.ts = "";
+    next.textContent = `· Next scheduled: ${Freshness.fmtDateTime(f.schedule.next_scheduled_run)} (${f.schedule.description})`
+      + (eod.overdue ? " · data is OVERDUE for the last scheduled run" : "")
+      + (f.market_open ? " · US market is open: scheduled data is the previous close until the 23:00 run, use Refresh on a stock page for a live quote" : "");
+
+    const list = document.getElementById("freshness-list");
+    list.replaceChildren();
+    for (const [key, label] of SOURCE_LABELS) {
+      const li = document.createElement("li");
+      const name = document.createElement("span");
+      name.textContent = label;
+      const when = document.createElement("span");
+      when.className = "freshness-when";
+      Freshness.stamp(when, f.sources[key].refreshed_at, { overdue: f.sources[key].overdue });
+      li.append(name, when);
+      list.appendChild(li);
+    }
+    paintMacroAsOf();
+    paintSectorAsOf();
+    paintMoversAsOf();
+    paintScoresAsOf();
+  } catch (err) {
+    document.getElementById("freshness-eod").textContent = "Data freshness unavailable";
+    console.warn("freshness unavailable", err);
+  }
+}
+
+function paintMoversAsOf() {
+  const el = document.getElementById("movers-asof");
+  if (!el || !freshnessData) return;
+  const f = freshnessData.sources.prices;
+  Freshness.stamp(el, f.refreshed_at, { label: "prices fetched", overdue: f.overdue });
+}
+
+function paintScoresAsOf() {
+  const el = document.getElementById("scores-asof");
+  if (!el || !freshnessData) return;
+  const f = freshnessData.sources.scores;
+  Freshness.stamp(el, f.refreshed_at, { label: "scores computed", overdue: f.overdue });
+}
+
+loadFreshness();
+loadMarketBrief();
 loadMacro();
 loadSectorFlows();
 loadMovers();

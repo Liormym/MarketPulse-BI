@@ -1,4 +1,4 @@
-# Nightly logical backup: pg_dump (custom format) -> S3-compatible bucket.
+# Nightly logical backup (02:00 Israel time): pg_dump (custom format) -> S3-compatible bucket.
 # Two containers sharing an emptyDir, each with only the tool it needs:
 #   init  "dump"   postgres:16 image  - pg_dump over the cluster network
 #   main  "upload" aws-cli image      - uploads the dump, never sees the DB password
@@ -10,8 +10,8 @@ metadata:
   name: marketpulse-pg-backup
   namespace: marketpulse
 spec:
-  schedule: "15 6 * * *" # 06:15 UTC - after the 17:30 ET EOD run, before the next one
-  timeZone: UTC
+  schedule: "0 2 * * *" # 02:00 Israel time: the quiet gap between the 23:00 refresh (done by ~23:45) and the 09:00 one
+  timeZone: Asia/Jerusalem
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 3600
   successfulJobsHistoryLimit: 3
