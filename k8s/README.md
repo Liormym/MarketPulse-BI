@@ -21,7 +21,7 @@ applied to a real cluster yet** - expect to fix small things on first contact.
 | `clusterissuer.yaml` | Let's Encrypt staging + prod |
 | `ingress.yaml` | main Ingress (TLS) + rate-limited refresh Ingress |
 
-Images: `ghcr.io/liormym/marketpulse-{webapp,pipeline}:sha-ae66c0f-amd64` (CI run 37601851429).
+Images: `ghcr.io/liormym/marketpulse-{webapp,pipeline}:sha-339e49d-amd64` (CI run 38129077609).
 
 ## Cluster prerequisites (one-time, not managed here)
 
