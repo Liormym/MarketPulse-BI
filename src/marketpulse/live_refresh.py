@@ -19,7 +19,7 @@ from sqlalchemy.engine import Engine
 from .extract.news import fetch_news_for_ticker_status
 from .extract.prices import fetch_prices
 from .load.freshness import mark_stocks
-from .load.upsert import upsert_daily_prices, upsert_news_articles
+from .load.upsert import get_price_divisors, upsert_daily_prices, upsert_news_articles
 from .recent_news import refresh_recent_news
 from .technicals import compute_and_upsert_technicals_for_asset
 
@@ -62,7 +62,9 @@ def refresh_ticker(engine: Engine, ticker: str, company_name: str) -> RefreshRes
     asset_keys = {ticker: asset_key}
 
     # --- Price / Volume ---
-    price_records, failed_tickers = fetch_prices([ticker], period=REFRESH_PRICE_PERIOD)
+    with engine.connect() as conn:
+        divisors = get_price_divisors(conn)
+    price_records, failed_tickers = fetch_prices([ticker], period=REFRESH_PRICE_PERIOD, divisors=divisors)
     if failed_tickers:
         return RefreshResult(ticker, failed=True, error="yfinance price fetch failed")
 

@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-SOURCES = ("macro", "prices", "news", "sector_flows", "scores", "brief", "eod_update")
+SOURCES = ("macro", "fx", "prices", "news", "sector_flows", "scores", "brief", "eod_update")
 _STOCK_COLUMNS = {
     "prices": "PricesFetchedAt",
     "news": "NewsFetchedAt",

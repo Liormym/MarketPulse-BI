@@ -46,20 +46,63 @@ def seed_assets(engine) -> int:
     assets = watchlist["assets"]
 
     with engine.begin() as conn:
+        old_divisors = dict(conn.execute(text('SELECT "Ticker", "PriceDivisor" FROM "DimAsset"')).all())
         for a in assets:
             conn.execute(
                 text(
                     """
-                    INSERT INTO "DimAsset" ("Ticker", "CompanyName", "Sector")
-                    VALUES (:ticker, :company_name, :sector)
+                    INSERT INTO "DimAsset" ("Ticker", "CompanyName", "Sector", "Universe", "Exchange", "Currency", "PriceDivisor")
+                    VALUES (:ticker, :company_name, :sector, :universe, :exchange, :currency, :price_divisor)
                     ON CONFLICT ("Ticker") DO UPDATE
                         SET "CompanyName" = EXCLUDED."CompanyName",
-                            "Sector" = EXCLUDED."Sector"
+                            "Sector" = EXCLUDED."Sector",
+                            "Universe" = EXCLUDED."Universe",
+                            "Exchange" = EXCLUDED."Exchange",
+                            "Currency" = EXCLUDED."Currency",
+                            "PriceDivisor" = EXCLUDED."PriceDivisor"
                     """
                 ),
-                a,
+                {
+                    "ticker": a["ticker"],
+                    "company_name": a["company_name"],
+                    "sector": a.get("sector"),
+                    "universe": a.get("universe", "sp500"),
+                    "exchange": a.get("exchange"),
+                    "currency": a.get("currency", "USD"),
+                    "price_divisor": int(a.get("price_divisor", 1)),
+                },
             )
+        rescaled = [
+            a["ticker"]
+            for a in assets
+            if int(a.get("price_divisor", 1)) == 100 and old_divisors.get(a["ticker"], 1) == 1
+        ]
+        touched = [t for t in rescaled if rescale_stored_prices(conn, t, 100) > 0]
+    if touched:
+        print(f"rescaled already-stored prices of {len(touched)} agorot-quoted ticker(s): {', '.join(touched)}")
     return len(assets)
+
+
+def rescale_stored_prices(conn, ticker: str, divisor: int) -> int:
+    """Rows stored BEFORE an asset was recognised as agorot-quoted hold agorot. Divides
+    OHLC once (it only runs when PriceDivisor changes 1 -> 100, so it cannot double-apply)
+    and recomputes the asset's technicals, which were derived from the unscaled prices."""
+    from marketpulse.technicals import compute_and_upsert_technicals_for_asset
+
+    key = conn.execute(text('SELECT "AssetKey" FROM "DimAsset" WHERE "Ticker" = :t'), {"t": ticker}).scalar()
+    n = conn.execute(
+        text(
+            """
+            UPDATE "FactDailyPrice"
+            SET "Close" = "Close" / :d, "Open" = "Open" / :d, "High" = "High" / :d, "Low" = "Low" / :d
+            WHERE "AssetKey" = :k
+            """
+        ),
+        {"d": divisor, "k": key},
+    ).rowcount
+    conn.execute(text('DELETE FROM "FactStockTechnicals" WHERE "AssetKey" = :k'), {"k": key})
+    compute_and_upsert_technicals_for_asset(conn, key)
+    return n
 
 
 def main() -> None:

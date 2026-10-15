@@ -1,4 +1,4 @@
-"""Backfills MacroIndicators: US 10Y/2Y Treasury yields (FRED), WTI crude oil,
+"""Backfills FxRate (USD->ILS, yfinance ILS=X) and MacroIndicators: US 10Y/2Y Treasury yields (FRED), WTI crude oil,
 Bitcoin (global liquidity proxy), the KOSPI index (Asian manufacturing/tech
 flow proxy), and three major US equity indices - S&P 500, NASDAQ Composite,
 and the S&P 500 Equal Weight ETF (RSP) - all via yfinance except the
@@ -82,6 +82,36 @@ def fetch_rsp_price(days: int) -> pd.Series:
     return hist["Close"]
 
 
+def fetch_usdils(days: int) -> pd.Series:
+    """ILS per 1 USD (Yahoo "ILS=X")."""
+    hist = yf.Ticker("ILS=X").history(period=f"{days}d", interval="1d")
+    return hist["Close"]
+
+
+# A USD/ILS quote outside this band is a bad tick or a unit error, never a real rate.
+FX_SANITY_BAND = (1.5, 7.0)
+
+
+def upsert_fx_rates(conn, series: pd.Series) -> int:
+    """Stores USD->ILS in FxRate, one row per day. Rows outside the sanity band are skipped."""
+    rates = {ts.tz_localize(None).normalize(): float(v) for ts, v in series.items() if pd.notna(v)}
+    rates = {d: r for d, r in rates.items() if FX_SANITY_BAND[0] <= r <= FX_SANITY_BAND[1]}
+    ensure_dim_dates(conn, rates)
+    for d, rate in rates.items():
+        conn.execute(
+            text(
+                """
+                INSERT INTO "FxRate" ("DateKey", "BaseCcy", "QuoteCcy", "Rate", "FetchedAt")
+                VALUES (:date_key, 'USD', 'ILS', :rate, now())
+                ON CONFLICT ("DateKey", "BaseCcy", "QuoteCcy") DO UPDATE
+                    SET "Rate" = EXCLUDED."Rate", "FetchedAt" = now()
+                """
+            ),
+            {"date_key": int(d.strftime("%Y%m%d")), "rate": rate},
+        )
+    return len(rates)
+
+
 def ensure_dim_dates(conn, dates) -> int:
     dates = sorted(set(dates))
     for d in dates:
@@ -112,6 +142,7 @@ def main() -> None:
     sp500 = fetch_sp500_index(args.days)
     nasdaq = fetch_nasdaq_index(args.days)
     rsp = fetch_rsp_price(args.days)
+    usdils = fetch_usdils(args.days)
 
     # Day-over-day % change vs. each series' own previous reading, computed
     # BEFORE the cutoff filter below so the window's first row still has a
@@ -220,6 +251,10 @@ def main() -> None:
             )
             n += 1
         mark_source(conn, "macro")
+        n_fx = upsert_fx_rates(conn, usdils)
+        if n_fx:
+            mark_source(conn, "fx")
+        print(f"Upserted {n_fx} USD/ILS FxRate rows")
     print(f"Upserted {n} MacroIndicators rows ({all_dates[0].date()} to {all_dates[-1].date()})")
 
 

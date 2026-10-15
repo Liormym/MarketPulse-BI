@@ -102,7 +102,8 @@ def gather_facts(conn: Connection) -> dict | None:
     stock_tickers = [
         r[0]
         for r in conn.execute(
-            text('SELECT "Ticker" FROM "DimAsset" WHERE "Sector" = ANY(:s)'),
+            # Breadth is a US-market statement: Israeli listings are excluded.
+            text('SELECT "Ticker" FROM "DimAsset" WHERE "Sector" = ANY(:s) AND "Universe" <> \'tase\''),
             {"s": list(SECTOR_TO_SPDR)},
         )
         if r[0] not in SECTOR_SPDR_TICKERS

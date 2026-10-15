@@ -13,9 +13,8 @@ float), which would make the backfill and the scheduled upsert disagree.
 
 Rows with Volume == 0 are dropped rather than stored. yfinance returns a
 phantom row (stale carried-forward Close, zero volume) for exchange-specific
-non-trading days it doesn't otherwise account for - e.g. the Tel Aviv Stock
-Exchange's Friday/Saturday weekend, which DimDate's Mon-Fri IsTradingDay
-logic doesn't know about. Left in, these rows quietly dilute rolling
+non-trading days it doesn't otherwise account for (the Tel Aviv Stock Exchange used
+to trade Sunday-Thursday, so Friday/Saturday rows looked like this). Left in, these rows quietly dilute rolling
 volume/ATR averages for the affected tickers (confirmed on BEZQ.TA/GNRS.TA/
 ORL.TA/VRDS.TA). A day with genuinely zero shares traded is indistinguishable
 from this and is discarded the same way - true zero-volume trading days are
@@ -50,8 +49,14 @@ class TickerFetchError(Exception):
     pass
 
 
+def _is_rate_limit(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    msg = str(exc).lower()
+    return "ratelimit" in name.lower() or "429" in msg or "too many requests" in msg or "rate limit" in msg
+
+
 @retry(
-    stop=stop_after_attempt(3),
+    stop=stop_after_attempt(4),
     wait=wait_exponential(multiplier=1, min=1, max=10),
     retry=retry_if_exception_type(TickerFetchError),
     reraise=True,
@@ -61,14 +66,22 @@ def _fetch_one(ticker: str, period: str):
     try:
         hist = yf.Ticker(ticker).history(period=period, interval="1d", timeout=10)
     except Exception as exc:  # network/rate-limit errors surface as generic exceptions from yfinance
+        if _is_rate_limit(exc):
+            pause = OUTBOUND_LIMITER.on_rate_limit()
+            log.warning("Yahoo throttled us at %s; all workers pause %.0fs", ticker, pause)
         raise TickerFetchError(f"{ticker}: {exc}") from exc
     if hist is None or hist.empty:
         raise TickerFetchError(f"{ticker}: empty response")
+    OUTBOUND_LIMITER.on_success()
     return hist
 
 
-def _records_from_history(ticker: str, hist) -> list[PriceRecord]:
+def _records_from_history(ticker: str, hist, divisor: int = 1) -> list[PriceRecord]:
+    """`divisor` converts quotes in a minor currency unit to the major one: Yahoo
+    prices most TASE shares in agorot (1/100 shekel), so divisor=100 stores whole
+    shekels. Volume is a share count and is never divided."""
     records = []
+    d = float(divisor)
     for idx, row in hist.iterrows():
         if int(row["Volume"]) == 0:
             continue  # phantom non-trading-day row (or a true zero-volume day) - see module docstring
@@ -76,11 +89,11 @@ def _records_from_history(ticker: str, hist) -> list[PriceRecord]:
             PriceRecord(
                 ticker=ticker,
                 trade_date=idx.date(),
-                close=float(row["Close"]),
+                close=float(row["Close"]) / d,
                 volume=int(row["Volume"]),
-                open=float(row["Open"]) if "Open" in row and row["Open"] == row["Open"] else None,
-                high=float(row["High"]) if "High" in row and row["High"] == row["High"] else None,
-                low=float(row["Low"]) if "Low" in row and row["Low"] == row["Low"] else None,
+                open=float(row["Open"]) / d if "Open" in row and row["Open"] == row["Open"] else None,
+                high=float(row["High"]) / d if "High" in row and row["High"] == row["High"] else None,
+                low=float(row["Low"]) / d if "Low" in row and row["Low"] == row["Low"] else None,
             )
         )
     return records
@@ -94,12 +107,17 @@ def _fetch_ticker(ticker: str, period: str):
 
 
 def fetch_prices(
-    tickers: list[str], lookback_days: int = 5, period: str | None = None
+    tickers: list[str],
+    lookback_days: int = 5,
+    period: str | None = None,
+    divisors: dict[str, int] | None = None,
 ) -> tuple[list[PriceRecord], list[str]]:
     """Returns (records, failed_tickers). Never raises for individual ticker failures.
 
     `period`, when given, is passed straight to yfinance (e.g. "max" for full
     available history) and takes precedence over `lookback_days`.
+    `divisors` maps ticker -> 100 for instruments quoted in a minor unit (agorot);
+    anything not listed is stored as quoted.
     """
     resolved_period = period or f"{lookback_days}d"
 
@@ -113,6 +131,6 @@ def fetch_prices(
             log.warning("giving up on %s after retries: %s", ticker, error)
             failed.append(ticker)
             continue
-        records.extend(_records_from_history(ticker, hist))
+        records.extend(_records_from_history(ticker, hist, (divisors or {}).get(ticker, 1)))
 
     return records, failed

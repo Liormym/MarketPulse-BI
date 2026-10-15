@@ -15,6 +15,12 @@ def get_asset_key_map(conn: Connection) -> dict[str, int]:
     return {ticker: key for ticker, key in rows}
 
 
+def get_price_divisors(conn: Connection) -> dict[str, int]:
+    """ticker -> 100 for assets Yahoo quotes in a minor unit (agorot); only those are listed."""
+    rows = conn.execute(text('SELECT "Ticker", "PriceDivisor" FROM "DimAsset" WHERE "PriceDivisor" <> 1')).all()
+    return {ticker: int(divisor) for ticker, divisor in rows}
+
+
 def upsert_daily_prices(conn: Connection, records, asset_keys: dict[str, int]) -> int:
     count = 0
     for r in records:

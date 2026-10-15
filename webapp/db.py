@@ -38,7 +38,7 @@ def get_tickers() -> list[dict]:
     """All assets from DimAsset, for populating the ticker picker."""
     query = text(
         """
-        SELECT "Ticker", "CompanyName", "Sector"
+        SELECT "Ticker", "CompanyName", "Sector", "Universe", "Currency"
         FROM "DimAsset"
         ORDER BY "Ticker"
         """
@@ -46,7 +46,13 @@ def get_tickers() -> list[dict]:
     with get_engine().connect() as conn:
         rows = conn.execute(query).mappings().all()
     return [
-        {"ticker": r["Ticker"], "name": r["CompanyName"], "sector": r["Sector"]}
+        {
+            "ticker": r["Ticker"],
+            "name": r["CompanyName"],
+            "sector": r["Sector"],
+            "universe": r["Universe"],
+            "currency": r["Currency"],
+        }
         for r in rows
     ]
 
@@ -59,7 +65,7 @@ def get_price_history(ticker: str) -> dict | None:
     """
     asset_query = text(
         """
-        SELECT "AssetKey", "Ticker", "CompanyName", "Sector"
+        SELECT "AssetKey", "Ticker", "CompanyName", "Sector", "Universe", "Currency"
         FROM "DimAsset"
         WHERE "Ticker" = :ticker
         """
@@ -108,7 +114,9 @@ def get_price_history(ticker: str) -> dict | None:
             latest_technicals_query, {"asset_key": asset["AssetKey"]}
         ).mappings().first()
 
-    sector_spdr = SECTOR_TO_SPDR.get(asset["Sector"])
+    # Israeli stocks have no US sector ETF to compare against: no sector flow for them,
+    # their sector pillar is neutral (see scoring.py), whatever sector label Yahoo gave.
+    sector_spdr = SECTOR_TO_SPDR.get(asset["Sector"]) if asset["Universe"] != "tase" else None
     prices = [_round(r["close"], 2) for r in rows]
 
     # RSI RSI_COMPARE_BARS bars before the latest one (for the score's "RSI is
@@ -127,6 +135,8 @@ def get_price_history(ticker: str) -> dict | None:
         "ticker": asset["Ticker"],
         "name": asset["CompanyName"],
         "sector": asset["Sector"],
+        "universe": asset["Universe"],
+        "currency": asset["Currency"],
         "sector_spdr": sector_spdr,
         "latest_price": latest_price,
         "daily_change_pct": daily_change_pct,
@@ -403,6 +413,7 @@ def get_top_movers(limit: int = 25) -> list[dict]:
         FROM ranked r
         JOIN "DimAsset" a ON a."AssetKey" = r."AssetKey"
         WHERE r.rn = 1 AND r."prev_close" IS NOT NULL AND r."prev_close" != 0
+          AND a."Universe" IN ('sp500', 'personal', 'etf', 'index', 'crypto')  -- the original dashboard universe
         """
     )
     with get_engine().connect() as conn:
@@ -435,6 +446,7 @@ def get_top_strong_buys(limit: int = 5) -> list[dict]:
         SELECT a."Ticker", a."CompanyName", fis."Score", fis."ComputedAt"
         FROM "FactInvestmentScore" fis
         JOIN "DimAsset" a ON a."AssetKey" = fis."AssetKey"
+        WHERE a."Universe" IN ('sp500', 'sp400', 'sp600', 'personal')  -- US only; Israeli stocks get their own Top 5
         ORDER BY fis."Score" DESC, a."Ticker" ASC  -- exact score first, ticker only breaks a true tie
         LIMIT :limit
         """

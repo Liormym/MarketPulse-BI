@@ -9,11 +9,12 @@ from datetime import date
 
 from sqlalchemy import text
 
+from .config import settings
 from .extract.news import fetch_news_status
 from .extract.prices import fetch_prices
 from .load.db import get_engine
 from .load.freshness import mark_source, mark_stocks
-from .load.upsert import get_asset_key_map, upsert_daily_prices, upsert_news_articles
+from .load.upsert import get_asset_key_map, get_price_divisors, upsert_daily_prices, upsert_news_articles
 from .logging_utils import configure_logging, log_stage, write_dq_results
 from .recent_news import refresh_recent_news
 from .quality.checks import (
@@ -33,8 +34,8 @@ log = logging.getLogger("pipeline")
 
 
 def _get_watched_assets(conn) -> list[dict]:
-    rows = conn.execute(text('SELECT "Ticker", "CompanyName" FROM "DimAsset" ORDER BY "Ticker"')).all()
-    return [{"ticker": t, "company_name": c} for t, c in rows]
+    rows = conn.execute(text('SELECT "Ticker", "CompanyName", "Universe" FROM "DimAsset" ORDER BY "Ticker"')).all()
+    return [{"ticker": t, "company_name": c, "universe": u} for t, c, u in rows]
 
 
 def _get_valid_date_keys(conn) -> set[int]:
@@ -56,11 +57,13 @@ def run(lookback_days: int = 5) -> uuid.UUID:
         valid_tickers = {a["ticker"] for a in assets}
         tickers = list(valid_tickers)
         valid_date_keys = _get_valid_date_keys(conn)
+        divisors = get_price_divisors(conn)
 
         # --- Extract ---
         with log_stage(conn, run_id, "Extract") as stage_result:
-            price_records, failed_price_tickers = fetch_prices(tickers, lookback_days=lookback_days)
-            news_records, news_reached = fetch_news_status(assets)
+            price_records, failed_price_tickers = fetch_prices(tickers, lookback_days=lookback_days, divisors=divisors)
+            news_universes = {u.strip() for u in settings.news_universes.split(",") if u.strip()}
+            news_records, news_reached = fetch_news_status([a for a in assets if a["universe"] in news_universes])
             save_raw(today, "prices", [r.__dict__ for r in price_records])
             save_raw(today, "news", [r.__dict__ for r in news_records])
             stage_result["records_processed"] = len(price_records) + len(news_records)

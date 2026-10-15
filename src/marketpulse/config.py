@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     watchlist_path: str = "config/watchlist.yaml"
     news_per_ticker_limit: int = 15
     news_max_workers: int = 8
+    # Universes whose headlines the scheduled pipeline fetches. The S&P 400/600 and TASE are
+    # NOT in the default until news fetching is tiered for ~2,000 tickers (see README).
+    news_universes: str = "sp500,personal"
     price_max_workers: int = 8
     outbound_min_interval_seconds: float = 0.25
 

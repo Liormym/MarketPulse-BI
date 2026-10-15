@@ -193,12 +193,22 @@ python scripts/apply_migrations.py     # versioned schema, tracked in schema_mig
 python scripts/seed_dimensions.py      # DimDate + DimAsset from config/watchlist.yaml
 ```
 
-### 3. (Optional) Expand to the full S&P 500 universe
+### 3. Build the stock universe (S&P 1500 + Tel Aviv Stock Exchange)
 
 ```bash
-python scripts/fetch_sp500_constituents.py   # merges the S&P 500 into the watchlist
-python scripts/seed_dimensions.py            # re-seed with the expanded list
+python scripts/build_universe.py       # writes config/watchlist.yaml (merge, never replaces verified entries)
+python scripts/seed_dimensions.py      # DimAsset incl. universe, currency and price divisor
 ```
+
+The universe is ~2,000 instruments: the S&P 500, MidCap 400 and SmallCap 600 (Wikipedia), the owner's personal holdings, ETFs/indices/crypto, and **tradable TASE equities** (Yahoo's screener, filtered to equities with at least ₪10k average daily turnover, then to at least 200 trading days of history after the load). Each asset carries `Universe`, `Currency` and `PriceDivisor` (migration `012`).
+
+**Israeli prices.** Yahoo quotes most TASE shares in **agorot** (currency code `ILA`, 1/100 of a shekel). The currency is read from Yahoo's own field (never guessed from the `.TA` suffix), and the pipeline divides OHLC by `PriceDivisor` (100) at load time, so every stored price is in whole shekels and the asset is tagged `ILS`. Volume is a share count and is not divided. Changing an asset's divisor from 1 to 100 rescales its already-stored rows once and recomputes its technicals.
+
+**USD/ILS.** `scripts/fetch_macro_indicators.py` stores the daily rate (yfinance `ILS=X`, ILS per USD) in `FxRate`; implausible quotes are rejected.
+
+**Bulk load.** The one-time 10-year history load is resumable and throttle-aware:
+`python scripts/backfill_historical_prices.py --period 10y --only-missing --universe sp400,sp600,tase --min-interval 0.4 --workers 4 --prune-short-history 200`
+(batched commits, a pause between batches, an automatic global back-off of 30 s doubling to 10 min whenever Yahoo answers "too many requests", progress with ETA, failed tickers written to a file).
 
 ### 4. Backfill historical data
 
