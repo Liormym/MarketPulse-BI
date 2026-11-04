@@ -29,7 +29,7 @@ import yfinance as yf
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from ..config import settings
-from .ratelimit import OUTBOUND_LIMITER
+from .ratelimit import OUTBOUND_LIMITER, is_rate_limit_error
 
 log = logging.getLogger(__name__)
 
@@ -49,10 +49,7 @@ class TickerFetchError(Exception):
     pass
 
 
-def _is_rate_limit(exc: BaseException) -> bool:
-    name = type(exc).__name__
-    msg = str(exc).lower()
-    return "ratelimit" in name.lower() or "429" in msg or "too many requests" in msg or "rate limit" in msg
+_is_rate_limit = is_rate_limit_error
 
 
 @retry(

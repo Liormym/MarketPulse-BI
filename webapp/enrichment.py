@@ -23,6 +23,7 @@ SRC_PATH = str(Path(__file__).resolve().parents[1] / "src")
 if SRC_PATH not in sys.path:
     sys.path.insert(0, SRC_PATH)
 
+from marketpulse.extract.ratelimit import OUTBOUND_LIMITER, is_rate_limit_error  # noqa: E402
 from marketpulse.insider import (  # noqa: E402
     INSIDER_LOOKBACK_DAYS,
     classify_transaction,
@@ -61,10 +62,14 @@ def _fetch_info_snapshot(ticker: str) -> dict | None:
     rather than overwriting good values with blanks); a successful call for
     something with no P/E (loss-making company, ETF, crypto) returns a dict
     with None for that field."""
+    OUTBOUND_LIMITER.wait()
     try:
         info = yf.Ticker(ticker).info
-    except Exception:
+    except Exception as exc:
+        if is_rate_limit_error(exc):
+            OUTBOUND_LIMITER.on_rate_limit()
         return None
+    OUTBOUND_LIMITER.on_success()
 
     pe = _finite_number(info.get("trailingPE"))
     market_cap = _finite_number(info.get("marketCap"))
@@ -79,10 +84,14 @@ def _fetch_info_snapshot(ticker: str) -> dict | None:
 def _fetch_insider_transactions(ticker: str) -> list[dict] | None:
     """None means the fetch FAILED (the caller must not advance the freshness
     timestamp); an empty list means the call worked and there are no filings."""
+    OUTBOUND_LIMITER.wait()
     try:
         df = yf.Ticker(ticker).insider_transactions
-    except Exception:
+    except Exception as exc:
+        if is_rate_limit_error(exc):
+            OUTBOUND_LIMITER.on_rate_limit()
         return None
+    OUTBOUND_LIMITER.on_success()
     if df is None or df.empty:
         return []
 
@@ -116,12 +125,17 @@ def _fetch_insider_transactions(ticker: str) -> list[dict] | None:
     return records
 
 
-def get_or_fetch_enrichment(conn, asset_key: int, ticker: str) -> dict:
+def get_or_fetch_enrichment(conn, asset_key: int, ticker: str, fetch: bool = True) -> dict:
     """Returns {"short_percent_of_float", "fundamentals", "insider_net",
     "insider_activity", "insider_transactions"}, refreshing short interest,
     fundamentals and insider filings from yfinance when their cached copy is
     missing or older than CACHE_TTL. `insider_net` is "selling", "buying" or None:
     the CEO/CFO net direction over the last INSIDER_LOOKBACK_DAYS days.
+
+    fetch=False serves only what is already cached and makes NO network call
+    (the bulk scoring run uses it for Israeli stocks: there are no SEC insider
+    filings or short-interest data for them, and ~460 pointless calls against a
+    throttling provider is exactly what to avoid).
     """
     cached = conn.execute(
         text(
@@ -137,7 +151,7 @@ def get_or_fetch_enrichment(conn, asset_key: int, ticker: str) -> dict:
         or cached[5] is None  # row written before the fundamentals columns existed
         or (datetime.now(timezone.utc) - cached[1]) > CACHE_TTL
     )
-    snapshot = _fetch_info_snapshot(ticker) if is_stale else None
+    snapshot = _fetch_info_snapshot(ticker) if (is_stale and fetch) else None
 
     if snapshot is not None:
         conn.execute(
@@ -188,7 +202,7 @@ def get_or_fetch_enrichment(conn, asset_key: int, ticker: str) -> dict:
         or cached[6] is None  # never fetched, or flagged for re-classification by a migration
         or (datetime.now(timezone.utc) - cached[6]) > CACHE_TTL
     )
-    fetched_insiders = _fetch_insider_transactions(ticker) if insider_stale else None
+    fetched_insiders = _fetch_insider_transactions(ticker) if (insider_stale and fetch) else None
     if fetched_insiders is not None:
         for txn in fetched_insiders:
             conn.execute(

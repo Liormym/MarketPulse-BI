@@ -75,7 +75,10 @@ def compute_score_snapshot(ticker: str, sector_flows: dict | None = None) -> dic
         sector_flows = {s["ticker"]: s for s in webapp_db.get_sector_flows()}
     sector_flow = sector_flows.get(data["sector_spdr"])
 
-    enrichment = webapp_db.enrich_stock(ticker)
+    # Israeli stocks have no SEC insider filings or short-interest feed (and
+    # build_score_kwargs fixes both inputs for them), so the bulk run makes no
+    # Yahoo call for them at all: ~460 avoided requests per run.
+    enrichment = webapp_db.enrich_stock(ticker, remote=data["universe"] != "tase")
 
     kwargs = webapp_db.build_score_kwargs(data, sector_flow, enrichment)
     return {

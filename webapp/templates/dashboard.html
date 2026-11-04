@@ -61,9 +61,17 @@
       </div>
 
       <section class="panel strong-buys-panel">
-        <div class="panel-header"><h2>📊 Top 5 Highest Signals <span class="info-dot" title="The score is a diagnostic snapshot of current technical and sector alignment (trend, momentum, sector flow, risk). It is not a forecast and not investment advice.">ⓘ</span></h2><span class="freshness-badge" id="scores-asof"></span></div>
-        <p class="score-note">The score is a diagnostic snapshot of current technical and sector alignment (trend, momentum, sector flow, risk). It is not a forecast and not investment advice.</p>
+        <div class="panel-header"><h2>📊 Top 5 Highest Signals (US) <span class="info-dot" title="The score is a diagnostic snapshot of current technical and sector alignment (trend, momentum, sector flow, risk). It is not a forecast and not investment advice.">ⓘ</span></h2><span class="freshness-badge" id="scores-asof"></span></div>
+        <p class="score-note">Ranked across the S&amp;P 1500 by exact score, with no sector caps. The score is a diagnostic snapshot of current technical and sector alignment (trend, momentum, sector flow, risk). It is not a forecast and not investment advice.</p>
         <div class="strong-buys-grid" id="strong-buys-grid">
+          <div class="empty-state">Loading…</div>
+        </div>
+      </section>
+
+      <section class="panel strong-buys-panel">
+        <div class="panel-header"><h2>📊 Top 5 Highest Signals (TASE) <span class="info-dot" title="The score is a diagnostic snapshot of current technical and sector alignment (trend, momentum, sector flow, risk). It is not a forecast and not investment advice.">ⓘ</span></h2></div>
+        <p class="score-note">Ranked across Tel Aviv equities by exact score, with no sector caps. <strong>No sector ETF flow data available for TASE:</strong> the sector pillar is fixed at neutral (7.5 of 15 points) for every TASE stock, so this ranking rests on trend, momentum and risk alone.</p>
+        <div class="strong-buys-grid" id="strong-buys-grid-tase">
           <div class="empty-state">Loading…</div>
         </div>
       </section>
@@ -83,6 +91,18 @@
           <div class="macro-tile"><div class="macro-tile-label">S&amp;P 500</div><div class="macro-tile-value" id="macro-sp500">—</div><div class="macro-tile-change" id="macro-sp500-change"></div></div>
           <div class="macro-tile"><div class="macro-tile-label">NASDAQ Composite</div><div class="macro-tile-value" id="macro-nasdaq">—</div><div class="macro-tile-change" id="macro-nasdaq-change"></div></div>
           <div class="macro-tile"><div class="macro-tile-label">S&amp;P 500 Equal Weight (RSP)</div><div class="macro-tile-value" id="macro-rsp">—</div><div class="macro-tile-change" id="macro-rsp-change"></div></div>
+        </div>
+      </section>
+
+      <section class="panel rotation-panel" aria-label="Sector Rotation Radar">
+        <div class="panel-header">
+          <h2>🛰 Sector Rotation Radar <span class="info-dot" title="Early read on where capital is moving, from the 2-day and 5-day return of each sector ETF relative to the equal-weight S&amp;P 500 (RSP) and the share of its stocks advancing. A sector that is Outflow / Lagging takes a deduction in the score of every stock in it; Inflow / Leading earns a reward. A heuristic diagnostic, not a forecast.">ⓘ</span></h2>
+          <span class="freshness-badge" id="rotation-asof"></span>
+        </div>
+        <p class="score-note">Sector return vs the equal-weight S&amp;P 500 (RSP) over 2 and 5 days (percentage points; equal weight so mega-cap moves do not make every other sector look like a leader) and breadth (share of the sector's S&amp;P 1500 stocks that rose that day), ranked from strongest inflow to heaviest outflow.</p>
+        <div class="rotation-summary" id="rotation-summary"></div>
+        <div class="rotation-list" id="rotation-list">
+          <div class="empty-state">Loading…</div>
         </div>
       </section>
 

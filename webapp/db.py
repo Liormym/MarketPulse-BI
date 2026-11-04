@@ -14,7 +14,8 @@ from sqlalchemy import text  # noqa: E402
 
 from marketpulse.load.db import get_engine  # noqa: E402
 from marketpulse.recent_news import safe_http_url  # noqa: E402
-from marketpulse.scoring import RSI_COMPARE_BARS, SECTOR_RELATIVE_BARS_DEFAULT  # noqa: E402
+from marketpulse.scoring import RSI_COMPARE_BARS  # noqa: E402
+from marketpulse.sector_rotation import BENCHMARK_LABEL, REGIME_LABELS  # noqa: E402
 from marketpulse.news_relevance import publisher_of, strip_publisher  # noqa: E402
 from marketpulse.sector_flow import SECTOR_SPDR_TICKERS, SECTOR_TO_SPDR  # noqa: E402
 
@@ -23,7 +24,9 @@ from marketpulse.sector_flow import SECTOR_SPDR_TICKERS, SECTOR_TO_SPDR  # noqa:
 # either threshold surfaces the dashboard's "Macro Risk Alert" banner.
 MACRO_RISK_10Y_YIELD_THRESHOLD = 4.25  # percent
 MACRO_RISK_OIL_THRESHOLD = 85.0  # USD/barrel, WTI
-SECTOR_RELATIVE_BARS = SECTOR_RELATIVE_BARS_DEFAULT  # trading bars for the sector-vs-S&P 500 comparison
+TASE_NO_SECTOR_NOTE = "No sector ETF flow data available for TASE"
+US_SCORE_UNIVERSES = ("sp500", "sp400", "sp600", "personal")
+TASE_SCORE_UNIVERSES = ("tase",)
 
 
 def get_asset_key(ticker: str) -> int | None:
@@ -176,6 +179,7 @@ def build_score_kwargs(data: dict, sector_flow: dict | None, enrichment: dict | 
     through one assembly function makes that class of drift structurally
     impossible, not just coincidentally avoided.
     """
+    is_tase = data.get("universe") == "tase"
     return dict(
         closes=data["prices"],
         sma20_series=data["sma20"],
@@ -188,8 +192,16 @@ def build_score_kwargs(data: dict, sector_flow: dict | None, enrichment: dict | 
         atr_90d_std=data["atr_90d_std"],
         sector_flow_status=sector_flow["flow_status"] if sector_flow else None,
         sector_rel_20d_pct=sector_flow["rel_20d_pct"] if sector_flow else None,
-        short_percent_of_float=enrichment["short_percent_of_float"] if enrichment else None,
-        insider_net=enrichment["insider_net"] if enrichment else None,
+        sector_rel_2d_pct=sector_flow["rel_2d_pct"] if sector_flow else None,
+        sector_rel_5d_pct=sector_flow["rel_5d_pct"] if sector_flow else None,
+        sector_breadth_pct=sector_flow["breadth_pct"] if sector_flow else None,
+        # Israeli stocks have no US sector ETF to compare against, no SEC insider
+        # filings and no short-interest feed: fixed explicitly (not "whatever the
+        # cache happens to hold") so the batch run, which never calls Yahoo for them,
+        # and the live page can never score the same stock differently.
+        sector_na_reason=TASE_NO_SECTOR_NOTE if is_tase else None,
+        short_percent_of_float=None if is_tase else (enrichment["short_percent_of_float"] if enrichment else None),
+        insider_net=None if is_tase else (enrichment["insider_net"] if enrichment else None),
     )
 
 
@@ -290,7 +302,9 @@ def get_macro_snapshot() -> dict | None:
 
 def get_sector_flows() -> list[dict]:
     """Latest Accumulation/Distribution/Neutral status for all 11 sector
-    SPDRs, plus each ETF's own 1-day price % change - computed live with the
+    SPDRs, the Early Sector Rotation read (2d/5d/20d relative return vs
+    the equal-weight S&P 500 (RSP), breadth, regime; stored by compute_sector_flows.py), plus each
+    ETF's own 1-day price % change - computed live with the
     same windowed LAG() query get_top_movers() uses (not stored: it's only
     11 tickers, so recomputing it live is cheap, and it keeps one proven
     pattern for "daily price % change" instead of a second stored copy that
@@ -329,39 +343,23 @@ def get_sector_flows() -> list[dict]:
         WHERE r.rn = 1
         """
     )
-    relative_query = text(
+    rotation_query = text(
         """
-        SELECT a."Ticker", d."Date", p."Close"
-        FROM "FactDailyPrice" p
-        JOIN "DimDate" d ON d."DateKey" = p."DateKey"
-        JOIN "DimAsset" a ON a."AssetKey" = p."AssetKey"
-        WHERE a."Ticker" = ANY(:tickers) AND d."Date" >= CURRENT_DATE - INTERVAL '60 days'
-        ORDER BY a."Ticker", d."Date"
-        """
-    )
-    spx_query = text(
-        """
-        SELECT m."SP500Index"
-        FROM "MacroIndicators" m JOIN "DimDate" d ON d."DateKey" = m."DateKey"
-        WHERE m."SP500Index" IS NOT NULL AND d."Date" >= CURRENT_DATE - INTERVAL '60 days'
-        ORDER BY d."Date"
+        SELECT DISTINCT ON (a."Ticker")
+            a."Ticker", d."Date", r."Rel2DPct", r."Rel5DPct", r."Rel20DPct", r."Advancing", r."Declining",
+            r."BreadthPct", r."RotationScore", r."Regime"
+        FROM "FactSectorRotation" r
+        JOIN "DimAsset" a ON a."AssetKey" = r."AssetKey"
+        JOIN "DimDate" d ON d."DateKey" = r."DateKey"
+        WHERE a."Ticker" = ANY(:tickers)
+        ORDER BY a."Ticker", d."Date" DESC
         """
     )
     with get_engine().connect() as conn:
         rows = conn.execute(query, {"tickers": SECTOR_SPDR_TICKERS}).mappings().all()
         change_rows = conn.execute(change_query, {"tickers": SECTOR_SPDR_TICKERS}).mappings().all()
-        closes_rows = conn.execute(relative_query, {"tickers": SECTOR_SPDR_TICKERS}).all()
-        spx = [r[0] for r in conn.execute(spx_query)]
-
-    # 20-trading-bar return of each sector ETF minus the S&P 500's, in percentage points.
-    closes_by_ticker: dict[str, list[float]] = {}
-    for ticker, _, close in closes_rows:
-        closes_by_ticker.setdefault(ticker, []).append(close)
-    spx_ret = (spx[-1] / spx[-1 - SECTOR_RELATIVE_BARS] - 1) * 100 if len(spx) > SECTOR_RELATIVE_BARS else None
-    rel_by_ticker = {}
-    for ticker, closes in closes_by_ticker.items():
-        if spx_ret is not None and len(closes) > SECTOR_RELATIVE_BARS and closes[-1 - SECTOR_RELATIVE_BARS]:
-            rel_by_ticker[ticker] = round((closes[-1] / closes[-1 - SECTOR_RELATIVE_BARS] - 1) * 100 - spx_ret, 2)
+        rotation_rows = conn.execute(rotation_query, {"tickers": SECTOR_SPDR_TICKERS}).mappings().all()
+    rotation_by_ticker = {r["Ticker"]: r for r in rotation_rows}
 
     change_by_ticker = {
         r["Ticker"]: round((r["Close"] - r["prev_close"]) / r["prev_close"] * 100, 2)
@@ -377,10 +375,48 @@ def get_sector_flows() -> list[dict]:
             "volume_ratio": round(r["VolumeRatio"], 2) if r["VolumeRatio"] is not None else None,
             "flow_status": r["FlowStatus"],
             "daily_change_pct": change_by_ticker.get(r["Ticker"]),
-            "rel_20d_pct": rel_by_ticker.get(r["Ticker"]),
+            **_rotation_fields(rotation_by_ticker.get(r["Ticker"])),
         }
         for r in rows
     ]
+
+
+def _rotation_fields(r) -> dict:
+    """The Early Sector Rotation Engine's stored read for one sector (all None
+    before the first compute_sector_flows.py run: the score then treats the
+    sector as neutral)."""
+    if r is None:
+        return {
+            "rel_2d_pct": None, "rel_5d_pct": None, "rel_20d_pct": None, "breadth_pct": None,
+            "advancing": None, "declining": None, "rotation_score": None, "regime": None,
+            "regime_label": None, "rotation_as_of": None,
+        }
+    return {
+        "rel_2d_pct": r["Rel2DPct"],
+        "rel_5d_pct": r["Rel5DPct"],
+        "rel_20d_pct": r["Rel20DPct"],
+        "breadth_pct": r["BreadthPct"],
+        "advancing": r["Advancing"],
+        "declining": r["Declining"],
+        "rotation_score": r["RotationScore"],
+        "regime": r["Regime"],
+        "regime_label": REGIME_LABELS.get(r["Regime"]),
+        "rotation_as_of": r["Date"].isoformat(),
+    }
+
+
+def get_sector_rotation() -> dict:
+    """The 11 US sectors ranked by the Early Sector Rotation signal (strongest
+    inflow first), for the dashboard's Sector Rotation Radar."""
+    sectors = [s for s in get_sector_flows() if s["rotation_score"] is not None]
+    sectors.sort(key=lambda s: s["rotation_score"], reverse=True)
+    return {
+        "as_of": sectors[0]["rotation_as_of"] if sectors else None,
+        "benchmark": BENCHMARK_LABEL,
+        "leading": [s["ticker"] for s in sectors if s["regime"] == "inflow"],
+        "lagging": [s["ticker"] for s in sectors if s["regime"] == "outflow"],
+        "sectors": sectors,
+    }
 
 
 def get_top_movers(limit: int = 25) -> list[dict]:
@@ -434,25 +470,31 @@ def get_top_movers(limit: int = 25) -> list[dict]:
     return movers[:limit]
 
 
-def get_top_strong_buys(limit: int = 5) -> list[dict]:
-    """Top-N tickers by cached Investment Score. Refreshed by
-    scripts/compute_investment_scores.py - recomputing the full score for
-    every watchlist ticker live on each dashboard load (price+technicals+
-    sector-flow joins, per ticker) would be far too slow, the same
-    reasoning get_top_movers's date-windowing already documents, just more
-    so since a score is a heavier computation than a single price delta."""
+def get_top_strong_buys(limit: int = 5, market: str = "us") -> list[dict]:
+    """Top-N tickers by cached Investment Score for one market: "us" (the S&P
+    1500 + personal holdings) or "tase" (Tel Aviv equities). Ranked purely on
+    the exact continuous score, with no sector caps or diversification rules.
+    Refreshed by scripts/compute_investment_scores.py - recomputing the full
+    score for every watchlist ticker live on each dashboard load
+    (price+technicals+sector-flow joins, per ticker) would be far too slow,
+    the same reasoning get_top_movers's date-windowing already documents,
+    just more so since a score is a heavier computation than a single price
+    delta."""
+    universes = {"us": US_SCORE_UNIVERSES, "tase": TASE_SCORE_UNIVERSES}.get(market)
+    if universes is None:
+        raise ValueError(f"unknown market {market!r}; expected 'us' or 'tase'")
     query = text(
         """
         SELECT a."Ticker", a."CompanyName", fis."Score", fis."ComputedAt"
         FROM "FactInvestmentScore" fis
         JOIN "DimAsset" a ON a."AssetKey" = fis."AssetKey"
-        WHERE a."Universe" IN ('sp500', 'sp400', 'sp600', 'personal')  -- US only; Israeli stocks get their own Top 5
+        WHERE a."Universe" = ANY(:universes)
         ORDER BY fis."Score" DESC, a."Ticker" ASC  -- exact score first, ticker only breaks a true tie
         LIMIT :limit
         """
     )
     with get_engine().connect() as conn:
-        rows = conn.execute(query, {"limit": limit}).mappings().all()
+        rows = conn.execute(query, {"limit": limit, "universes": list(universes)}).mappings().all()
     return [
         {
             "ticker": r["Ticker"],
@@ -460,22 +502,24 @@ def get_top_strong_buys(limit: int = 5) -> list[dict]:
             "score": round(r["Score"], 1),  # display value; ranking uses the exact score
             "score_exact": round(r["Score"], 4),
             "as_of": r["ComputedAt"].isoformat(),
+            "market": market,
         }
         for r in rows
     ]
 
 
-def enrich_stock(ticker: str) -> dict | None:
+def enrich_stock(ticker: str, *, remote: bool = True) -> dict | None:
     """Short interest + insider transactions, fetched on-demand and cached
     (see enrichment.py - these are point-in-time snapshots, not daily
-    history, so they're not part of the batch technicals computation)."""
+    history, so they're not part of the batch technicals computation).
+    remote=False serves the cache only and never calls Yahoo."""
     from enrichment import get_or_fetch_enrichment
 
     asset_key = get_asset_key(ticker)
     if asset_key is None:
         return None
     with get_engine().begin() as conn:
-        return get_or_fetch_enrichment(conn, asset_key, ticker)
+        return get_or_fetch_enrichment(conn, asset_key, ticker) if remote else get_or_fetch_enrichment(conn, asset_key, ticker, fetch=False)
 
 
 def get_recent_news(ticker: str) -> list[dict]:

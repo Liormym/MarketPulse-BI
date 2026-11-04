@@ -52,7 +52,7 @@ def main() -> None:
     total_tech_rows = 0
     with engine.begin() as conn:
         for asset_key, ticker in affected:
-            n = compute_and_upsert_technicals_for_asset(conn, asset_key)
+            n = compute_and_upsert_technicals_for_asset(conn, asset_key, full=True)
             total_tech_rows += n
             print(f"  recomputed technicals for {ticker}: {n} rows")
 

@@ -16,9 +16,15 @@ Three pillars plus one explicit modifier, one scale for every stock:
         points; oversold stocks that are recovering are rewarded; overbought
         (>70) is progressively penalised so stretched stocks cannot reach 80+
     Pillar 3  Sector & risk/short profile      25 pts
-        sector flow (10) + sector 20-day performance vs the S&P 500 (5)
-        short interest (6) + volatility vs own history (4)
-        (a typical stock earns about 6 of these 10)
+        sector (15): volume money-flow (4) + sector 20-day performance vs
+        the equal-weight S&P 500 (RSP) (4) + SHORT-TERM ROTATION (7: 2-day and 5-day
+        relative return vs RSP and sector breadth, see sector_rotation.py), with an explicit
+        -4 deduction while the sector is in a confirmed aggressive outflow and a
+        +2 reward in a confirmed aggressive inflow, so a bleeding sector drops its
+        stocks out of "Strong Signal" within days, not weeks
+        risk (10): short interest (6) + volatility vs own history (4)
+        (a neutral sector earns exactly 7.5 of the 15; Israeli stocks have no
+        sector ETF and are fixed at that neutral 7.5)
     Modifier  CEO/CFO insider activity, last 90 days   -5 / 0 / +5 pts
         net selling = exactly -5.0 and the red "Insider Selling" badge;
         net buying  = exactly +5.0 and the green "Insider Buying" badge;
@@ -43,6 +49,8 @@ little data. All constants are documented calibration heuristics, deliberately
 easy to retune, not a fitted model.
 """
 from dataclasses import dataclass, field
+
+from .sector_rotation import REGIME_INFLOW, REGIME_LABELS, REGIME_OUTFLOW, rotation_signal
 
 SCORE_VERSION = 2
 MIN_PRICES_FOR_SCORE = 200
@@ -76,11 +84,16 @@ RSI_RECOVERY_CAP = 22.0
 RSI_COMPARE_BARS = 5
 
 # --- Pillar 3 ---
-PTS_SECTOR_FLOW = {"Accumulation": 10.0, "Neutral": 5.0, "Distribution": 0.0}
-PTS_SECTOR_FLOW_MAX = 10.0
-PTS_SECTOR_RELATIVE_MAX = 5.0
-SECTOR_RELATIVE_BARS_DEFAULT = 20  # trading bars compared for sector vs S&P 500 (webapp/db.py uses the same)
-SECTOR_RELATIVE_BAND_PCT = 3.0  # sector 20d return vs S&P 500: +3 pts-of-percent = full, -3 = zero
+PTS_SECTOR_FLOW = {"Accumulation": 4.0, "Neutral": 2.0, "Distribution": 0.0}
+PTS_SECTOR_FLOW_MAX = 4.0
+PTS_SECTOR_RELATIVE_MAX = 4.0
+PTS_SECTOR_ROTATION_MAX = 7.0  # graded from the 2d/5d relative return + breadth signal (-1..+1)
+ROTATION_OUTFLOW_DEDUCTION = 4.0  # explicit extra deduction while the sector is in a confirmed outflow
+ROTATION_INFLOW_BONUS = 2.0  # explicit extra reward in a confirmed inflow (never lifts the pillar above SECTOR_MAX)
+SECTOR_NEUTRAL_POINTS = SECTOR_MAX / 2  # 7.5: what a sector with no edge either way (or no sector data) earns
+assert PTS_SECTOR_FLOW_MAX + PTS_SECTOR_RELATIVE_MAX + PTS_SECTOR_ROTATION_MAX == SECTOR_MAX
+SECTOR_RELATIVE_BARS_DEFAULT = 20  # trading bars compared for sector vs RSP
+SECTOR_RELATIVE_BAND_PCT = 3.0  # sector 20d return vs RSP: +3 pts-of-percent = full, -3 = zero
 PTS_SHORT_MAX = 6.0
 SHORT_HIGH = 0.10  # fraction of float: zero short-interest points at/above this (squeeze exception below)
 PTS_SHORT_SQUEEZE = 4.8
@@ -219,7 +232,22 @@ def _momentum_items(rsi: float | None, rsi_prev: float | None, flags: dict) -> l
 # --------------------------------------------------------------------------
 # Pillar 3: sector + risk/short
 # --------------------------------------------------------------------------
-def _sector_items(flow_status: str | None, sector_rel_20d_pct: float | None) -> list[ScoreItem]:
+def _sector_items(
+    flow_status: str | None,
+    sector_rel_20d_pct: float | None,
+    rel_2d_pct: float | None,
+    rel_5d_pct: float | None,
+    breadth_pct: float | None,
+    flags: dict,
+    na_reason: str | None = None,
+) -> list[ScoreItem]:
+    """Pillar 3, sector half (15 pts). Every component counts as neutral when its
+    data is missing, so a stock is never marked down for a gap in OUR data."""
+    if na_reason is not None:
+        # No sector ETF exists for this stock (Israeli equities): fixed at neutral, and it says so.
+        flags["sector_na"] = True
+        return [ScoreItem("sector", SECTOR_NEUTRAL_POINTS, SECTOR_MAX, f"{na_reason}: sector pillar fixed at neutral ({SECTOR_NEUTRAL_POINTS:g}/{SECTOR_MAX:g})")]
+
     items = []
     if flow_status in PTS_SECTOR_FLOW:
         items.append(ScoreItem("sector", PTS_SECTOR_FLOW[flow_status], PTS_SECTOR_FLOW_MAX, f"Sector money-flow: {flow_status}"))
@@ -227,16 +255,53 @@ def _sector_items(flow_status: str | None, sector_rel_20d_pct: float | None) -> 
         items.append(ScoreItem("sector", PTS_SECTOR_FLOW_MAX / 2, PTS_SECTOR_FLOW_MAX, "Sector money-flow: no data, counted as neutral"))
 
     if sector_rel_20d_pct is None:
-        items.append(ScoreItem("sector", PTS_SECTOR_RELATIVE_MAX / 2, PTS_SECTOR_RELATIVE_MAX, "Sector vs S&P 500 (20 days): no data, counted as neutral"))
+        items.append(ScoreItem("sector", PTS_SECTOR_RELATIVE_MAX / 2, PTS_SECTOR_RELATIVE_MAX, "Sector vs equal-weight S&P 500 / RSP (20 days): no data, counted as neutral"))
     else:
         pts = _ramp(sector_rel_20d_pct, PTS_SECTOR_RELATIVE_MAX, SECTOR_RELATIVE_BAND_PCT)
         items.append(
             ScoreItem(
                 "sector", pts, PTS_SECTOR_RELATIVE_MAX,
-                f"Sector {sector_rel_20d_pct:+.1f} percentage points vs the S&P 500 over 20 days "
+                f"Sector {sector_rel_20d_pct:+.1f} percentage points vs the equal-weight S&P 500 (RSP) over 20 days "
                 f"(half points when level, full at +{SECTOR_RELATIVE_BAND_PCT:.0f}, zero at -{SECTOR_RELATIVE_BAND_PCT:.0f} points)",
             )
         )
+
+    reading = rotation_signal(rel_2d_pct, rel_5d_pct, breadth_pct)
+    if reading.score is None:
+        items.append(ScoreItem("sector", PTS_SECTOR_ROTATION_MAX / 2, PTS_SECTOR_ROTATION_MAX, "Short-term sector rotation (2d/5d vs RSP, breadth): no data, counted as neutral"))
+        return items
+
+    pts = PTS_SECTOR_ROTATION_MAX * (0.5 + 0.5 * reading.score)
+    breadth_text = f"{breadth_pct:.0f}% of its stocks advancing" if breadth_pct is not None else "breadth unavailable"
+    items.append(
+        ScoreItem(
+            "sector", pts, PTS_SECTOR_ROTATION_MAX,
+            f"Short-term rotation: sector {rel_2d_pct:+.1f} pp (2 days) and {rel_5d_pct:+.1f} pp (5 days) vs RSP, "
+            f"{breadth_text} ({REGIME_LABELS[reading.regime]}, signal {reading.score:+.2f})",
+        )
+    )
+
+    if reading.regime == REGIME_OUTFLOW:
+        flags["sector_outflow"] = True
+        items.append(
+            ScoreItem(
+                "sector", -ROTATION_OUTFLOW_DEDUCTION, ROTATION_OUTFLOW_DEDUCTION,
+                "Early-rotation deduction: the sector lags the equal-weight S&P 500 (RSP) over 2 AND 5 days with more decliners than "
+                "advancers, a confirmed capital outflow",
+            )
+        )
+    elif reading.regime == REGIME_INFLOW:
+        flags["sector_inflow"] = True
+        room = SECTOR_MAX - sum(i.points for i in items)
+        bonus = min(ROTATION_INFLOW_BONUS, room)
+        if bonus > 0:
+            items.append(
+                ScoreItem(
+                    "sector", bonus, ROTATION_INFLOW_BONUS,
+                    "Early-rotation reward: the sector leads the equal-weight S&P 500 (RSP) over 2 AND 5 days with more advancers than "
+                    "decliners, a confirmed capital inflow",
+                )
+            )
     return items
 
 
@@ -308,6 +373,10 @@ def compute_investment_score(
     atr_90d_std: float | None = None,
     sector_flow_status: str | None = None,
     sector_rel_20d_pct: float | None = None,
+    sector_rel_2d_pct: float | None = None,
+    sector_rel_5d_pct: float | None = None,
+    sector_breadth_pct: float | None = None,
+    sector_na_reason: str | None = None,
     short_percent_of_float: float | None = None,
     insider_net: str | None = None,
 ) -> ScoreBreakdown:
@@ -323,7 +392,10 @@ def compute_investment_score(
     trend = _trend_items(price, _last_non_null(sma20_series), _last_non_null(sma50_series), _last_non_null(sma200_series))
     trend_pts = sum(i.points for i in trend)
     momentum = _momentum_items(rsi14, rsi14_prev, flags)
-    sector = _sector_items(sector_flow_status, sector_rel_20d_pct)
+    sector = _sector_items(
+        sector_flow_status, sector_rel_20d_pct, sector_rel_2d_pct, sector_rel_5d_pct, sector_breadth_pct, flags,
+        na_reason=sector_na_reason,
+    )
     risk = _risk_items(trend_pts, short_percent_of_float, atr14, atr_90d_avg, atr_90d_std, flags)
     insider = _insider_item(insider_net, flags)
 

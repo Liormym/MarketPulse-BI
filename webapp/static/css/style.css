@@ -943,3 +943,67 @@ a.driver-title:hover { color: var(--accent); text-decoration: underline; }
 
 .alert-badge.bad { background: var(--neg-soft); color: var(--neg); }
 .alert-badge.neutral { background: var(--surface); color: var(--text-muted); }
+
+
+/* ---- Sector Rotation Radar (dashboard) ---- */
+.rotation-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.rotation-chip {
+  font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text-muted);
+}
+.rotation-chip strong { margin-right: 4px; }
+.rotation-chip.inflow { color: var(--pos); border-color: rgba(22, 242, 163, 0.35); background: var(--pos-soft); }
+.rotation-chip.outflow { color: var(--neg); border-color: rgba(255, 77, 106, 0.35); background: var(--neg-soft); }
+
+.rotation-list { display: flex; flex-direction: column; gap: 6px; }
+.rotation-row {
+  display: grid;
+  grid-template-columns: 22px minmax(150px, 1.5fr) minmax(90px, 1fr) repeat(3, 74px) 138px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 13px;
+  transition: transform 0.1s ease, border-color 0.15s ease;
+}
+.rotation-row:hover { transform: translateY(-1px); border-color: var(--accent); }
+.rotation-row.inflow { border-left-color: var(--pos); background: linear-gradient(90deg, var(--pos-soft), var(--surface) 45%); }
+.rotation-row.outflow { border-left-color: var(--neg); background: linear-gradient(90deg, var(--neg-soft), var(--surface) 45%); }
+.rot-rank { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
+.rot-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+.rot-name strong { color: var(--text); font-family: var(--font-mono); margin-right: 6px; }
+.rot-bar { position: relative; height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.rot-bar::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--border); }
+.rot-bar-fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+.rot-bar-fill.positive { background: var(--pos); box-shadow: 0 0 10px rgba(22, 242, 163, 0.5); }
+.rot-bar-fill.negative { background: var(--neg); box-shadow: 0 0 10px rgba(255, 77, 106, 0.5); }
+.rot-metric { display: flex; flex-direction: column; align-items: flex-end; font-family: var(--font-mono); line-height: 1.25; }
+.rot-metric em { font-style: normal; font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
+.rot-metric b { font-size: 13px; font-weight: 700; }
+.rot-regime {
+  justify-self: end; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px;
+  text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap;
+  background: rgba(136, 146, 163, 0.15); color: var(--text-muted);
+}
+.rot-regime.inflow { background: var(--pos-soft); color: var(--pos); }
+.rot-regime.outflow { background: var(--neg-soft); color: var(--neg); }
+
+@media (max-width: 760px) {
+  .rotation-row {
+    grid-template-columns: 22px 1fr repeat(3, minmax(0, 1fr));
+    grid-template-areas: "rank name name regime regime" "bar bar bar bar bar" ". m2 m5 mb .";
+    row-gap: 8px;
+  }
+  .rot-rank { grid-area: rank; }
+  .rot-name { grid-area: name; }
+  .rot-regime { grid-area: regime; }
+  .rot-bar { grid-area: bar; }
+  .rot-m2 { grid-area: m2; align-items: flex-start; }
+  .rot-m5 { grid-area: m5; align-items: flex-start; }
+  .rot-mb { grid-area: mb; align-items: flex-start; }
+}

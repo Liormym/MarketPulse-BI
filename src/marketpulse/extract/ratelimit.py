@@ -21,6 +21,13 @@ BACKOFF_START_SECONDS = 30.0
 BACKOFF_MAX_SECONDS = 600.0
 
 
+def is_rate_limit_error(exc: BaseException) -> bool:
+    """True when an exception from a market-data call means "too many requests"."""
+    name = type(exc).__name__
+    msg = str(exc).lower()
+    return "ratelimit" in name.lower() or "429" in msg or "too many requests" in msg or "rate limit" in msg
+
+
 class SharedRateLimiter:
     def __init__(self, min_interval_seconds: float):
         self._min_interval = min_interval_seconds
@@ -28,6 +35,7 @@ class SharedRateLimiter:
         self._next_slot = 0.0
         self._pause = 0.0
         self._pause_until = 0.0
+        self.bursts = 0  # separate throttle bursts seen so far (callers use it as a circuit breaker)
 
     def wait(self) -> None:
         if self._min_interval <= 0:
@@ -46,6 +54,7 @@ class SharedRateLimiter:
             now = time.monotonic()
             if now < self._pause_until:  # same burst, already backing off
                 return self._pause
+            self.bursts += 1
             self._pause = min(max(self._pause * 2, BACKOFF_START_SECONDS), BACKOFF_MAX_SECONDS)
             self._pause_until = now + self._pause
             self._next_slot = max(self._next_slot, self._pause_until)

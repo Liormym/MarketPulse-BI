@@ -5,7 +5,7 @@ Run: python -m marketpulse.pipeline
 """
 import logging
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 
 from sqlalchemy import text
 
@@ -14,6 +14,7 @@ from .extract.news import fetch_news_status
 from .extract.prices import fetch_prices
 from .load.db import get_engine
 from .load.freshness import mark_source, mark_stocks
+from .news_tiers import parse_news_tiers, select_news_due
 from .load.upsert import get_asset_key_map, get_price_divisors, upsert_daily_prices, upsert_news_articles
 from .logging_utils import configure_logging, log_stage, write_dq_results
 from .recent_news import refresh_recent_news
@@ -36,6 +37,18 @@ log = logging.getLogger("pipeline")
 def _get_watched_assets(conn) -> list[dict]:
     rows = conn.execute(text('SELECT "Ticker", "CompanyName", "Universe" FROM "DimAsset" ORDER BY "Ticker"')).all()
     return [{"ticker": t, "company_name": c, "universe": u} for t, c, u in rows]
+
+
+def _get_news_fetched_at(conn) -> dict:
+    rows = conn.execute(
+        text(
+            """
+            SELECT a."Ticker", f."NewsFetchedAt"
+            FROM "DimAsset" a LEFT JOIN "StockDataFreshness" f ON f."AssetKey" = a."AssetKey"
+            """
+        )
+    ).all()
+    return {ticker: fetched_at for ticker, fetched_at in rows}
 
 
 def _get_valid_date_keys(conn) -> set[int]:
@@ -62,8 +75,20 @@ def run(lookback_days: int = 5) -> uuid.UUID:
         # --- Extract ---
         with log_stage(conn, run_id, "Extract") as stage_result:
             price_records, failed_price_tickers = fetch_prices(tickers, lookback_days=lookback_days, divisors=divisors)
-            news_universes = {u.strip() for u in settings.news_universes.split(",") if u.strip()}
-            news_records, news_reached = fetch_news_status([a for a in assets if a["universe"] in news_universes])
+            due, tier_counts = select_news_due(
+                assets,
+                _get_news_fetched_at(conn),
+                datetime.now(timezone.utc),
+                parse_news_tiers(settings.news_tiers),
+                settings.news_catchup_max_tickers,
+            )
+            log.info(
+                "news tiers: fetching %d tickers (core %d, catch-up %d); %d catch-up deferred to later runs, "
+                "%d not due yet, %d universes without company news",
+                len(due), tier_counts["core"], tier_counts["catchup"], tier_counts["deferred"],
+                tier_counts["not_due"], tier_counts["untiered"],
+            )
+            news_records, news_reached = fetch_news_status(due)
             save_raw(today, "prices", [r.__dict__ for r in price_records])
             save_raw(today, "news", [r.__dict__ for r in news_records])
             stage_result["records_processed"] = len(price_records) + len(news_records)

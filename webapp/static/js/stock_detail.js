@@ -445,6 +445,8 @@ const FLAG_BADGES = {
   high_volatility: { label: "⚡ High Volatility", cls: "warn" },
   insider_selling: { label: "⚠ Insider Selling", cls: "bearish" },
   insider_buying: { label: "↑ Insider Buying", cls: "bullish" },
+  sector_outflow: { label: "🔻 Sector Outflow", cls: "bearish" },
+  sector_inflow: { label: "🟢 Sector Inflow", cls: "bullish" },
 };
 
 // The insider modifier sits outside the pillars: red when it subtracts, green when it adds.

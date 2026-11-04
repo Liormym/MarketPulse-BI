@@ -18,7 +18,7 @@ SRC_PATH = str(Path(__file__).resolve().parents[1] / "src")
 if SRC_PATH not in sys.path:
     sys.path.insert(0, SRC_PATH)
 
-from flask import Flask, Response, jsonify, render_template, session, url_for  # noqa: E402
+from flask import Flask, Response, jsonify, render_template, request, session, url_for  # noqa: E402
 
 import db  # noqa: E402
 from app_security import configure_app  # noqa: E402
@@ -132,9 +132,17 @@ def api_movers():
     return jsonify(db.get_top_movers())
 
 
+@app.route("/api/sector-rotation")
+def api_sector_rotation():
+    return jsonify(db.get_sector_rotation())
+
+
 @app.route("/api/top-scores")
 def api_top_scores():
-    return jsonify(db.get_top_strong_buys())
+    market = request.args.get("market", "us").lower()
+    if market not in ("us", "tase"):
+        return jsonify({"error": "market must be 'us' or 'tase'"}), 400
+    return jsonify(db.get_top_strong_buys(market=market))
 
 
 @app.route("/stock/<ticker>")

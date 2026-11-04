@@ -29,9 +29,15 @@ class Settings(BaseSettings):
     watchlist_path: str = "config/watchlist.yaml"
     news_per_ticker_limit: int = 15
     news_max_workers: int = 8
-    # Universes whose headlines the scheduled pipeline fetches. The S&P 400/600 and TASE are
-    # NOT in the default until news fetching is tiered for ~2,000 tickers (see README).
-    news_universes: str = "sp500,personal"
+    # Tiered news (see marketpulse/news_tiers.py): "universe:max_age_hours". Max age 0 = every run
+    # (core); otherwise a ticker is re-fetched only when its last fetch is older than that.
+    # Universes not listed here (etf, index, crypto) are never fetched.
+    news_tiers: str = "sp500:0,personal:0,sp400:24,sp600:48,tase:72"
+    # At most this many NON-core tickers per run, most overdue first, so a cold start spreads out.
+    news_catchup_max_tickers: int = 350
+    # After this many separate "429 too many requests" bursts in one run, the news stage stops
+    # starting new tickers; the rest stay due and are retried next run instead of hammering the feed.
+    news_throttle_abort_after: int = 4
     price_max_workers: int = 8
     outbound_min_interval_seconds: float = 0.25
 

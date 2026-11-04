@@ -176,11 +176,11 @@ function renderTickerTape(movers) {
   tape.innerHTML = `<div class="ticker-tape-track">${itemsHtml}${itemsHtml}</div>`;
 }
 
-async function loadStrongBuys() {
-  const grid = document.getElementById("strong-buys-grid");
+async function loadStrongBuys(market = "us", gridId = "strong-buys-grid") {
+  const grid = document.getElementById(gridId);
   if (!grid) return;
 
-  const res = await fetch("/api/top-scores");
+  const res = await fetch(`/api/top-scores?market=${market}`);
   const rows = await res.json();
 
   if (!rows.length) {
@@ -191,14 +191,75 @@ async function loadStrongBuys() {
   grid.innerHTML = rows
     .map(
       (r, i) => `
-      <a class="strong-buy-card" href="/stock/${r.ticker}">
+      <a class="strong-buy-card" href="/stock/${encodeURIComponent(r.ticker)}">
         <div class="strong-buy-rank">#${i + 1}</div>
-        <div class="strong-buy-ticker">${r.ticker}</div>
-        <div class="strong-buy-name">${r.name}</div>
+        <div class="strong-buy-ticker">${escapeHtml(r.ticker)}</div>
+        <div class="strong-buy-name">${escapeHtml(r.name)}</div>
         <div class="strong-buy-score" title="Exact score ${r.score_exact}">${r.score.toFixed(1)}</div>
       </a>`
     )
     .join("");
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
+// ---- Sector Rotation Radar ----
+const REGIME_CLASS = { inflow: "inflow", outflow: "outflow", balanced: "balanced" };
+
+function ppText(value) {
+  return value == null ? "—" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+}
+
+function signCls(value) {
+  return value == null ? "" : value >= 0 ? "positive" : "negative";
+}
+
+async function loadSectorRotation() {
+  const list = document.getElementById("rotation-list");
+  if (!list) return;
+  const res = await fetch("/api/sector-rotation");
+  const data = await res.json();
+
+  if (!data.sectors || !data.sectors.length) {
+    list.innerHTML = '<div class="empty-state">No rotation data yet — run scripts/compute_sector_flows.py</div>';
+    return;
+  }
+
+  rotationBarDate = data.as_of;
+  paintRotationAsOf();
+
+  const summary = document.getElementById("rotation-summary");
+  const chips = (label, cls, tickers) =>
+    tickers.length ? `<span class="rotation-chip ${cls}"><strong>${label}</strong> ${tickers.map(escapeHtml).join(", ")}</span>` : "";
+  summary.innerHTML =
+    chips("Inflow / Leading", "inflow", data.leading) + chips("Outflow / Lagging", "outflow", data.lagging) ||
+    '<span class="rotation-chip balanced">No sector is in a confirmed inflow or outflow today</span>';
+
+  list.replaceChildren(
+    ...data.sectors.map((s, i) => {
+      const row = document.createElement("a");
+      row.className = `rotation-row ${REGIME_CLASS[s.regime] || "balanced"}`;
+      row.href = `/stock/${encodeURIComponent(s.ticker)}`;
+      const name = s.name.replace(/ Select Sector SPDR Fund$/, "");
+      const half = Math.min(Math.abs(s.rotation_score), 1) * 50; // % of the track, from the centre line
+      const breadth = s.breadth_pct == null ? "—" : `${s.breadth_pct.toFixed(0)}%`;
+      const movers = s.advancing == null ? "" : `${s.advancing} up / ${s.declining} down`;
+      row.innerHTML = `
+        <span class="rot-rank">${i + 1}</span>
+        <span class="rot-name"><strong>${escapeHtml(s.ticker)}</strong> ${escapeHtml(name)}</span>
+        <span class="rot-bar" title="Rotation signal ${s.rotation_score.toFixed(2)} (-1 outflow … +1 inflow)">
+          <span class="rot-bar-fill ${s.rotation_score >= 0 ? "positive" : "negative"}"
+                style="${s.rotation_score >= 0 ? "left:50%" : `right:50%`};width:${half}%"></span>
+        </span>
+        <span class="rot-metric rot-m2"><em>2d</em><b class="change-pct ${signCls(s.rel_2d_pct)}">${ppText(s.rel_2d_pct)}</b></span>
+        <span class="rot-metric rot-m5"><em>5d</em><b class="change-pct ${signCls(s.rel_5d_pct)}">${ppText(s.rel_5d_pct)}</b></span>
+        <span class="rot-metric rot-mb" title="${movers}"><em>Breadth</em><b>${breadth}</b></span>
+        <span class="rot-regime ${REGIME_CLASS[s.regime] || "balanced"}">${escapeHtml(s.regime_label || "Balanced")}</span>`;
+      return row;
+    })
+  );
 }
 
 async function loadMarketBrief() {
@@ -220,6 +281,7 @@ async function loadMarketBrief() {
 
 let freshnessData = null;
 let sectorBarDate = "";
+let rotationBarDate = "";
 
 function paintMacroAsOf() {
   const el = document.getElementById("macro-asof");
@@ -233,6 +295,13 @@ function paintSectorAsOf() {
   if (!el || !freshnessData) return;
   const f = freshnessData.sources.sector_flows;
   Freshness.stamp(el, f.refreshed_at, { label: `bar ${sectorBarDate || "—"} · computed`, overdue: f.overdue });
+}
+
+function paintRotationAsOf() {
+  const el = document.getElementById("rotation-asof");
+  if (!el || !freshnessData) return;
+  const f = freshnessData.sources.sector_flows;
+  Freshness.stamp(el, f.refreshed_at, { label: `bar ${rotationBarDate || "—"} · computed`, overdue: f.overdue });
 }
 
 const SOURCE_LABELS = [
@@ -279,6 +348,7 @@ async function loadFreshness() {
     }
     paintMacroAsOf();
     paintSectorAsOf();
+    paintRotationAsOf();
     paintMoversAsOf();
     paintScoresAsOf();
   } catch (err) {
@@ -306,4 +376,6 @@ loadMarketBrief();
 loadMacro();
 loadSectorFlows();
 loadMovers();
-loadStrongBuys();
+loadStrongBuys("us", "strong-buys-grid");
+loadStrongBuys("tase", "strong-buys-grid-tase");
+loadSectorRotation();

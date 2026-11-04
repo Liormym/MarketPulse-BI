@@ -113,17 +113,79 @@ def test_oversold_recovery_is_rewarded_only_when_rsi_is_rising():
     assert rising.momentum_points <= 22.0  # capped: a bounce never outranks healthy momentum
 
 
-def test_sector_pillar_flow_and_relative_performance():
-    acc = score(**_kw(sector_flow_status="Accumulation", sector_rel_20d_pct=3.0)).sector_points
-    dist = score(**_kw(sector_flow_status="Distribution", sector_rel_20d_pct=-3.0)).sector_points
-    assert acc == SECTOR_MAX and dist == 0.0
+STRONG_INFLOW = dict(sector_flow_status="Accumulation", sector_rel_20d_pct=3.0,
+                     sector_rel_2d_pct=2.0, sector_rel_5d_pct=4.0, sector_breadth_pct=80.0)
+STRONG_OUTFLOW = dict(sector_flow_status="Distribution", sector_rel_20d_pct=-3.0,
+                      sector_rel_2d_pct=-2.0, sector_rel_5d_pct=-4.0, sector_breadth_pct=20.0)
+
+
+def test_sector_pillar_flow_relative_performance_and_rotation():
+    acc = score(**_kw(**STRONG_INFLOW))
+    dist = score(**_kw(**STRONG_OUTFLOW))
+    assert acc.sector_points == SECTOR_MAX  # 4 flow + 4 trend + 7 rotation; the +2 reward cannot lift it above the cap
+    assert acc.flags.get("sector_inflow") is True
+    # 0 + 0 + 0, then the explicit -4 early-rotation deduction: the pillar goes NEGATIVE on purpose
+    assert dist.sector_points == -4.0
+    assert dist.flags.get("sector_outflow") is True
+
+
+def test_a_neutral_sector_earns_exactly_half_the_pillar():
+    r = score(**_kw(sector_flow_status="Neutral", sector_rel_20d_pct=0.0, sector_rel_2d_pct=0.0, sector_rel_5d_pct=0.0, sector_breadth_pct=50.0))
+    assert r.sector_points == SECTOR_MAX / 2 == 7.5
+    assert "sector_outflow" not in r.flags and "sector_inflow" not in r.flags
+
+
+def test_outflow_needs_all_three_signals_to_agree():
+    # lagging over 2 and 5 days, but MORE advancers than decliners: not a confirmed outflow, no deduction
+    r = score(**_kw(sector_flow_status="Neutral", sector_rel_20d_pct=0.0, sector_rel_2d_pct=-2.0,
+                    sector_rel_5d_pct=-4.0, sector_breadth_pct=55.0))
+    assert "sector_outflow" not in r.flags
+    assert all(i.points >= 0 for i in r.items if i.pillar == "sector")
+    # a bad 2-day move against a flat 5-day move: noise, not rotation
+    r = score(**_kw(sector_flow_status="Neutral", sector_rel_20d_pct=0.0, sector_rel_2d_pct=-2.0,
+                    sector_rel_5d_pct=0.5, sector_breadth_pct=30.0))
+    assert "sector_outflow" not in r.flags
+
+
+def test_a_bleeding_sector_drops_a_strong_signal_stock_out_of_strong_signal():
+    # A solid stock that sits just above the Strong Signal line (~74) while its sector is neutral.
+    stock = dict(price=130.0, sma20=120.0, sma50=110.0, sma200=100.0, rsi14=50.0, short_percent_of_float=0.02)
+    neutral = score(**_kw(**stock))
+    bleeding = score(**_kw(**stock, sector_flow_status="Neutral", sector_rel_20d_pct=0.0, sector_rel_2d_pct=-2.0,
+                           sector_rel_5d_pct=-4.0, sector_breadth_pct=25.0))
+    assert signal_label(neutral.score) == "Strong Signal"
+    assert bleeding.flags.get("sector_outflow") is True
+    assert signal_label(bleeding.score) == "Neutral / Mixed"  # dropped out immediately, not weeks later
+    assert neutral.score - bleeding.score == pytest.approx(7.5, abs=0.01)  # the whole sector pillar: 7.5 -> 0
+    # ...whereas an exceptional stock (trend and momentum both maxed) stays strong through a bleeding sector
+    exceptional = score(**_kw(price=130.0, sma20=120.0, sma50=110.0, sma200=100.0, rsi14=60.0, short_percent_of_float=0.02,
+                              sector_flow_status="Neutral", sector_rel_20d_pct=0.0, sector_rel_2d_pct=-2.0,
+                              sector_rel_5d_pct=-4.0, sector_breadth_pct=25.0))
+    assert signal_label(exceptional.score) == "Strong Signal"
+    assert any("Early-rotation deduction" in line for line in bleeding.audit_trail)
+
+
+def test_sector_inflow_is_rewarded_only_up_to_the_pillar_cap():
+    base = dict(sector_flow_status="Neutral", sector_rel_20d_pct=0.0)
+    inflow = score(**_kw(**base, sector_rel_2d_pct=2.0, sector_rel_5d_pct=4.0, sector_breadth_pct=80.0))
+    assert inflow.flags.get("sector_inflow") is True
+    assert 7.5 < inflow.sector_points <= SECTOR_MAX
+
+
+def test_israeli_stocks_have_a_fixed_neutral_sector_pillar_with_a_clear_note():
+    note = "No sector ETF flow data available for TASE"
+    r = score(**_kw(sector_na_reason=note, **STRONG_OUTFLOW))  # even outflow-looking data is ignored
+    assert r.sector_points == 7.5 and r.flags.get("sector_na") is True
+    assert "sector_outflow" not in r.flags
+    assert [i.text for i in r.items if i.pillar == "sector"] == [f"{note}: sector pillar fixed at neutral (7.5/15)"]
 
 
 def test_missing_data_is_neutral_and_says_so():
-    r = score(**_kw(sector_flow_status=None, sector_rel_20d_pct=None, rsi14=None, short_percent_of_float=None, atr14=None))
+    r = score(**_kw(sector_flow_status=None, sector_rel_20d_pct=None, sector_rel_2d_pct=None, sector_rel_5d_pct=None,
+                    sector_breadth_pct=None, rsi14=None, short_percent_of_float=None, atr14=None))
     assert r.sector_points == SECTOR_MAX / 2
     assert r.momentum_points == MOMENTUM_MAX / 2
-    assert sum("no data" in line or "not enough" in line for line in r.audit_trail) >= 4
+    assert sum("no data" in line or "not enough" in line for line in r.audit_trail) >= 5
 
 
 def test_short_interest_squeeze_vs_bearish_conviction():

@@ -68,6 +68,12 @@ def _parse_feed(url: str):
             timeout=REQUEST_TIMEOUT_SECONDS,
             headers={"User-Agent": USER_AGENT},
         )
+        if resp.status_code == 429:
+            # Provider says slow down: every worker's next request slot moves out by an
+            # escalating pause (30 s ... 10 min) - the retry below then waits it out.
+            pause = OUTBOUND_LIMITER.on_rate_limit()
+            log.warning("news feed throttled us (HTTP 429); all workers pause %.0fs: %s", pause, url)
+            raise requests.HTTPError("429 Too Many Requests", response=resp)
         resp.raise_for_status()
     except requests.RequestException as exc:
         raise ConnectionError(f"failed to fetch feed: {url}: {exc}") from exc
@@ -75,6 +81,7 @@ def _parse_feed(url: str):
     feed = feedparser.parse(resp.content)
     if feed.bozo and not feed.entries:
         raise ConnectionError(f"failed to parse feed: {url}")
+    OUTBOUND_LIMITER.on_success()
     return feed
 
 
@@ -145,7 +152,9 @@ def fetch_news_for_ticker(ticker: str, company_name: str, limit: int) -> list[Ne
     return fetch_news_for_ticker_status(ticker, company_name, limit)[0]
 
 
-def _fetch_ticker_news(asset: dict, limit: int) -> tuple[list[NewsRecord], bool]:
+def _fetch_ticker_news(asset: dict, limit: int, throttle_stop=None) -> tuple[list[NewsRecord], bool]:
+    if throttle_stop is not None and throttle_stop():
+        return [], False  # circuit breaker open: not reached, so the ticker stays due next run
     try:
         return fetch_news_for_ticker_status(asset["ticker"], asset["company_name"], limit)
     except Exception:
@@ -157,8 +166,25 @@ def fetch_news_status(assets: list[dict], limit_per_ticker: int | None = None) -
     """assets: list of {'ticker': ..., 'company_name': ...} from DimAsset.
     Returns (records, tickers whose feeds were actually reached)."""
     limit = limit_per_ticker or settings.news_per_ticker_limit
+
+    # Circuit breaker: once the provider has throttled us in `news_throttle_abort_after`
+    # separate bursts, stop STARTING new tickers. They are not marked fetched, so they
+    # are simply due again on the next run - the alternative is hammering a feed that
+    # has already said no, which is how an IP gets banned.
+    start_bursts = OUTBOUND_LIMITER.bursts
+    abort_after = settings.news_throttle_abort_after
+    tripped = {"logged": False}
+
+    def throttle_stop() -> bool:
+        if abort_after and OUTBOUND_LIMITER.bursts - start_bursts >= abort_after:
+            if not tripped["logged"]:
+                tripped["logged"] = True
+                log.error("news feed throttled %d times this run; skipping the remaining tickers until the next run", abort_after)
+            return True
+        return False
+
     with ThreadPoolExecutor(max_workers=settings.news_max_workers) as pool:
-        per_ticker = list(pool.map(lambda asset: _fetch_ticker_news(asset, limit), assets))
+        per_ticker = list(pool.map(lambda asset: _fetch_ticker_news(asset, limit, throttle_stop), assets))
     records = [record for recs, _ in per_ticker for record in recs]
     reached = {asset["ticker"] for asset, (_, ok) in zip(assets, per_ticker) if ok}
     return records, reached

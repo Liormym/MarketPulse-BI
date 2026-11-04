@@ -6,6 +6,12 @@ already sitting in FactDailyPrice - no new data fetch involved.
 RSI is informational only (like the pattern hints): it is displayed on the
 deep-dive page but is NOT an input to the Investment Score.
 
+Daily updates are INCREMENTAL (see compute_and_upsert_technicals): a stock that
+already has technicals only gets its newest bars (plus a small overlap that
+picks up revised closes) recomputed, with INCREMENTAL_LOOKBACK_BARS of earlier
+history as context, instead of its whole multi-year history. A stock with no
+technicals yet gets one full baseline pass.
+
 Gap detection returns a structured GapInfo (direction + the prev-close/open
 price bounds), not just a bare percentage - see describe_gap(). This does
 not attempt to detect whether a gap was later "filled" by subsequent price
@@ -21,6 +27,15 @@ ATR_ZSCORE_WINDOW = 90  # trailing days of ATR14 readings used for the rolling m
 RSI_PERIOD = 14
 RSI_OVERSOLD = 30.0  # below this reads as "oversold"
 RSI_OVERBOUGHT = 70.0  # above this reads as "overbought"
+
+# Incremental updates. The context in front of the first re-written bar must cover
+# the longest look-back: SMA-200 needs 200 bars and the ATR-90 z-score needs 14 + 89.
+# RSI is recursive (Wilder smoothing never forgets), but its memory decays by
+# (13/14) per bar: after 250 bars of context the difference from a full-history
+# run is ~1e-8 RSI points, far below the 1-decimal precision it is shown at.
+INCREMENTAL_LOOKBACK_BARS = 250
+INCREMENTAL_OVERLAP_BARS = 5  # bars that already have technicals but are recomputed anyway (revised closes)
+UPSERT_CHUNK_ROWS = 2000
 
 
 @dataclass
@@ -58,6 +73,14 @@ def _sma(values: list[float], period: int) -> float | None:
     if len(values) < period:
         return None
     return sum(values[-period:]) / period
+
+
+def _sma_ending_at(values: list[float], end: int, period: int) -> float | None:
+    """SMA of the `period` values ending at index `end` (inclusive), without
+    copying the prefix: the same number _sma(values[:end + 1], period) gives."""
+    if end + 1 < period:
+        return None
+    return sum(values[end + 1 - period : end + 1]) / period
 
 
 def _rsi_from_averages(avg_gain: float, avg_loss: float) -> float | None:
@@ -144,8 +167,7 @@ def compute_technicals(bars: list[DailyBar]) -> list[DayTechnicals]:
         prev_close = closes[i - 1] if i > 0 else None
         true_ranges.append(_true_range(bar, prev_close))
 
-        closes_so_far = closes[: i + 1]
-        smas = {p: _sma(closes_so_far, p) for p in SMA_PERIODS}
+        smas = {p: _sma_ending_at(closes, i, p) for p in SMA_PERIODS}
 
         tr_window = [tr for tr in true_ranges[-ATR_PERIOD:] if tr is not None]
         atr = sum(tr_window) / len(tr_window) if len(tr_window) == ATR_PERIOD else None
@@ -182,65 +204,113 @@ def compute_technicals(bars: list[DailyBar]) -> list[DayTechnicals]:
     return results
 
 
-def compute_and_upsert_technicals_for_asset(conn, asset_key: int) -> int:
-    """Recomputes and upserts FactStockTechnicals for one asset from its full
-    FactDailyPrice history. Shared by scripts/compute_stock_technicals.py
-    (all tickers, batch) and the live single-ticker refresh endpoint.
-    """
-    from sqlalchemy import text  # local import: keeps this module DB-free for pure-function callers/tests
+def _upsert_technicals(conn, asset_key: int, date_keys: list[int], technicals: list[DayTechnicals]) -> None:
+    """Batched upsert (one multi-row INSERT per chunk instead of one round trip per row)."""
+    from sqlalchemy import column, table
+    from sqlalchemy.dialects.postgresql import insert
 
-    rows = conn.execute(
+    cols = ("SMA20", "SMA50", "SMA150", "SMA200", "ATR14", "ATR90Avg", "ATR90Std", "AvgVolume20D", "GapPct", "RSI14")
+    tbl = table("FactStockTechnicals", column("AssetKey"), column("DateKey"), *[column(c) for c in cols])
+    rows = [
+        {
+            "AssetKey": asset_key,
+            "DateKey": date_key,
+            "SMA20": t.sma20,
+            "SMA50": t.sma50,
+            "SMA150": t.sma150,
+            "SMA200": t.sma200,
+            "ATR14": t.atr14,
+            "ATR90Avg": t.atr_90d_avg,
+            "ATR90Std": t.atr_90d_std,
+            "AvgVolume20D": t.avg_volume_20d,
+            "GapPct": t.gap_pct,
+            "RSI14": t.rsi14,
+        }
+        for date_key, t in zip(date_keys, technicals)
+    ]
+    for i in range(0, len(rows), UPSERT_CHUNK_ROWS):
+        stmt = insert(tbl).values(rows[i : i + UPSERT_CHUNK_ROWS])
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["AssetKey", "DateKey"],
+            set_={c: getattr(stmt.excluded, c) for c in cols},
+        )
+        conn.execute(stmt)
+
+
+def compute_and_upsert_technicals(conn, asset_key: int, *, full: bool = False) -> tuple[int, str]:
+    """Recomputes and upserts FactStockTechnicals for one asset. Returns
+    (rows written, "baseline" | "incremental" | "none").
+
+    baseline     the asset has no technicals yet, or its price history now
+                 reaches back further than its technicals do (a backfill added
+                 older bars), or full=True: every bar is computed.
+    incremental  only the bars newer than the last computed one, plus
+                 INCREMENTAL_OVERLAP_BARS already-computed bars, are written;
+                 INCREMENTAL_LOOKBACK_BARS earlier bars are read as context.
+                 Same numbers as a full run for every written bar (see
+                 tests/test_technicals_incremental.py), at a fraction of the cost.
+    """
+    from sqlalchemy import text
+
+    first_price, first_tech, last_tech = conn.execute(
         text(
             """
-            SELECT d."DateKey", p."Open", p."High", p."Low", p."Close", p."Volume"
-            FROM "FactDailyPrice" p
-            JOIN "DimDate" d ON d."DateKey" = p."DateKey"
-            WHERE p."AssetKey" = :asset_key
-            ORDER BY d."Date" ASC
+            SELECT (SELECT MIN("DateKey") FROM "FactDailyPrice" WHERE "AssetKey" = :a),
+                   (SELECT MIN("DateKey") FROM "FactStockTechnicals" WHERE "AssetKey" = :a),
+                   (SELECT MAX("DateKey") FROM "FactStockTechnicals" WHERE "AssetKey" = :a)
             """
         ),
-        {"asset_key": asset_key},
-    ).all()
-    if not rows:
-        return 0
+        {"a": asset_key},
+    ).one()
+    if first_price is None:
+        return 0, "none"
+
+    baseline = full or last_tech is None or first_price < first_tech
+    if baseline:
+        rows = conn.execute(
+            text(
+                """
+                SELECT "DateKey", "Open", "High", "Low", "Close", "Volume"
+                FROM "FactDailyPrice" WHERE "AssetKey" = :a ORDER BY "DateKey" ASC
+                """
+            ),
+            {"a": asset_key},
+        ).all()
+        write_n = len(rows)
+    else:
+        new_bars = conn.execute(
+            text('SELECT COUNT(*) FROM "FactDailyPrice" WHERE "AssetKey" = :a AND "DateKey" > :last'),
+            {"a": asset_key, "last": last_tech},
+        ).scalar()
+        write_n = new_bars + INCREMENTAL_OVERLAP_BARS
+        rows = conn.execute(
+            text(
+                """
+                SELECT "DateKey", "Open", "High", "Low", "Close", "Volume"
+                FROM "FactDailyPrice" WHERE "AssetKey" = :a ORDER BY "DateKey" DESC LIMIT :n
+                """
+            ),
+            {"a": asset_key, "n": write_n + INCREMENTAL_LOOKBACK_BARS},
+        ).all()
+        rows.reverse()
 
     date_keys = [r[0] for r in rows]
     bars = [DailyBar(open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5]) for r in rows]
     technicals = compute_technicals(bars)
 
-    for date_key, t in zip(date_keys, technicals):
-        conn.execute(
-            text(
-                """
-                INSERT INTO "FactStockTechnicals"
-                    ("AssetKey", "DateKey", "SMA20", "SMA50", "SMA150", "SMA200",
-                     "ATR14", "ATR90Avg", "ATR90Std", "AvgVolume20D", "GapPct", "RSI14")
-                VALUES (:asset_key, :date_key, :sma20, :sma50, :sma150, :sma200,
-                        :atr14, :atr_90d_avg, :atr_90d_std, :avg_volume, :gap_pct, :rsi14)
-                ON CONFLICT ("AssetKey", "DateKey") DO UPDATE
-                    SET "SMA20" = EXCLUDED."SMA20", "SMA50" = EXCLUDED."SMA50",
-                        "SMA150" = EXCLUDED."SMA150", "SMA200" = EXCLUDED."SMA200",
-                        "ATR14" = EXCLUDED."ATR14", "ATR90Avg" = EXCLUDED."ATR90Avg",
-                        "ATR90Std" = EXCLUDED."ATR90Std", "AvgVolume20D" = EXCLUDED."AvgVolume20D",
-                        "GapPct" = EXCLUDED."GapPct", "RSI14" = EXCLUDED."RSI14"
-                """
-            ),
-            {
-                "asset_key": asset_key,
-                "date_key": date_key,
-                "sma20": t.sma20,
-                "sma50": t.sma50,
-                "sma150": t.sma150,
-                "sma200": t.sma200,
-                "atr14": t.atr14,
-                "atr_90d_avg": t.atr_90d_avg,
-                "atr_90d_std": t.atr_90d_std,
-                "avg_volume": t.avg_volume_20d,
-                "gap_pct": t.gap_pct,
-                "rsi14": t.rsi14,
-            },
-        )
+    write_n = min(write_n, len(rows))
+    if write_n == 0:
+        return 0, "none"
+    _upsert_technicals(conn, asset_key, date_keys[-write_n:], technicals[-write_n:])
+
     from .load.freshness import mark_stocks
 
     mark_stocks(conn, [asset_key], "technicals")
-    return len(rows)
+    return write_n, "baseline" if baseline else "incremental"
+
+
+def compute_and_upsert_technicals_for_asset(conn, asset_key: int, *, full: bool = False) -> int:
+    """Rows written. Shared by scripts/compute_stock_technicals.py (all tickers,
+    batch) and the live single-ticker refresh endpoint; incremental unless the
+    asset has no technicals yet or full=True (see compute_and_upsert_technicals)."""
+    return compute_and_upsert_technicals(conn, asset_key, full=full)[0]
