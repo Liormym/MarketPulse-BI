@@ -9,6 +9,7 @@ Pattern-detection hints (marketpulse.pattern_detection) are surfaced
 alongside it but are NOT part of that score - see that module's docstring.
 """
 import hashlib
+import re
 import sys
 from datetime import date, datetime, timezone
 from functools import lru_cache
@@ -143,6 +144,44 @@ def api_top_scores():
     if market not in ("us", "tase"):
         return jsonify({"error": "market must be 'us' or 'tase'"}), 400
     return jsonify(db.get_top_strong_buys(market=market))
+
+
+@app.route("/portfolio")
+def portfolio():
+    """My Portfolio. The page is a static shell: holdings (ticker, quantity, average buy
+    price) live only in the browser's localStorage and are never sent to or stored by this
+    server. It only calls /api/portfolio/quotes with bare tickers, and /api/fx."""
+    return render_template("portfolio.html", tickers=db.get_tickers())
+
+
+@app.route("/api/fx")
+def api_fx():
+    fx = db.get_fx_latest("USD", "ILS")
+    if fx is None:
+        return jsonify({"error": "no USD/ILS exchange rate stored yet"}), 503
+    return jsonify(fx)
+
+
+PORTFOLIO_MAX_TICKERS = 100
+_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-=^]{0,15}$")
+
+
+@app.route("/api/portfolio/quotes", methods=["POST"])
+def api_portfolio_quotes():
+    """Stateless quote lookup for a list of bare tickers. Accepts {"tickers": [...]};
+    quantities and buy prices are neither accepted nor stored - the client computes
+    value and return from its own localStorage."""
+    body = request.get_json(silent=True)
+    raw = body.get("tickers") if isinstance(body, dict) else None
+    if not isinstance(raw, list) or not all(isinstance(t, str) for t in raw):
+        return jsonify({"error": "body must be JSON like {\"tickers\": [\"AAPL\", \"BEZQ.TA\"]}"}), 400
+    tickers = list(dict.fromkeys(t.strip().upper() for t in raw if t.strip()))
+    if len(tickers) > PORTFOLIO_MAX_TICKERS:
+        return jsonify({"error": f"at most {PORTFOLIO_MAX_TICKERS} tickers per request"}), 400
+    bad = [t for t in tickers if not _TICKER_RE.match(t)]
+    if bad:
+        return jsonify({"error": f"invalid ticker(s): {', '.join(bad[:5])}"}), 400
+    return jsonify(db.get_portfolio_quotes(tickers))
 
 
 @app.route("/stock/<ticker>")

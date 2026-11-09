@@ -642,3 +642,130 @@ def get_stock_freshness(asset_key: int, latest_bar_date) -> dict:
         "prices_overdue": is_overdue(prices, now),
         "market_open": us_market_open(now),
     }
+
+
+# --------------------------------------------------------------------------
+# Portfolio tracker support (stateless: no holdings, quantities or buy prices
+# ever reach the server - it only answers "what is this ticker worth today")
+# --------------------------------------------------------------------------
+FX_STALE_AFTER_DAYS = 4  # a long weekend plus a missed run still reads as fresh
+
+
+def get_fx_latest(base: str = "USD", quote: str = "ILS") -> dict | None:
+    """Latest stored rate for one currency pair (units of `quote` per 1 `base`), with its
+    market date and fetch time. None when no rate has ever been stored."""
+    from datetime import date as _date, datetime, timezone
+
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT d."Date", f."Rate", f."FetchedAt"
+                FROM "FxRate" f JOIN "DimDate" d ON d."DateKey" = f."DateKey"
+                WHERE f."BaseCcy" = :b AND f."QuoteCcy" = :q
+                ORDER BY f."DateKey" DESC LIMIT 1
+                """
+            ),
+            {"b": base, "q": quote},
+        ).first()
+    if row is None:
+        return None
+    as_of, rate, fetched_at = row
+    age_days = (_date.today() - as_of).days
+    return {
+        "base": base,
+        "quote": quote,
+        "rate": round(float(rate), 6),
+        "as_of": as_of.isoformat(),
+        "fetched_at": _utc(fetched_at),
+        "age_days": age_days,
+        "stale": age_days > FX_STALE_AFTER_DAYS,
+        "server_now": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def get_portfolio_quotes(tickers: list[str]) -> dict:
+    """For each ticker: company name, native currency (prices are stored in whole units,
+    TASE agorot already converted to shekels), latest close, previous close, the cached exact
+    v2 Investment Score and how fresh that data is. Returns
+    {"quotes": {ticker: {...}}, "unknown": [tickers not in DimAsset]}."""
+    from datetime import date as _date
+
+    from marketpulse.scoring import signal_label
+
+    if not tickers:
+        return {"quotes": {}, "unknown": []}
+
+    with get_engine().connect() as conn:
+        assets = conn.execute(
+            text('SELECT "AssetKey", "Ticker", "CompanyName", "Currency", "Universe" FROM "DimAsset" WHERE "Ticker" = ANY(:t)'),
+            {"t": tickers},
+        ).mappings().all()
+        keys = [a["AssetKey"] for a in assets]
+        bars = conn.execute(
+            text(
+                """
+                SELECT a."AssetKey", d."Date", p."Close"
+                FROM "DimAsset" a
+                CROSS JOIN LATERAL (
+                    SELECT "DateKey", "Close" FROM "FactDailyPrice"
+                    WHERE "AssetKey" = a."AssetKey" AND "Close" IS NOT NULL
+                    ORDER BY "DateKey" DESC LIMIT 2
+                ) p
+                JOIN "DimDate" d ON d."DateKey" = p."DateKey"
+                WHERE a."AssetKey" = ANY(:k)
+                ORDER BY a."AssetKey", d."Date" DESC
+                """
+            ),
+            {"k": keys},
+        ).all()
+        scores = {
+            r["AssetKey"]: r
+            for r in conn.execute(
+                text('SELECT "AssetKey", "Score", "ComputedAt" FROM "FactInvestmentScore" WHERE "AssetKey" = ANY(:k)'),
+                {"k": keys},
+            ).mappings()
+        }
+        fresh = {
+            r["AssetKey"]: r
+            for r in conn.execute(
+                text('SELECT "AssetKey", "PricesFetchedAt" FROM "StockDataFreshness" WHERE "AssetKey" = ANY(:k)'),
+                {"k": keys},
+            ).mappings()
+        }
+
+    by_asset: dict[int, list] = {}
+    for key, bar_date, close in bars:
+        by_asset.setdefault(key, []).append((bar_date, float(close)))
+
+    quotes = {}
+    for a in assets:
+        history = by_asset.get(a["AssetKey"], [])
+        latest = history[0] if history else None
+        prev = history[1] if len(history) > 1 else None
+        score_row = scores.get(a["AssetKey"])
+        fetched = fresh[a["AssetKey"]]["PricesFetchedAt"] if a["AssetKey"] in fresh else None
+        price_age = (_date.today() - latest[0]).days if latest else None
+        score = None if score_row is None else score_row["Score"]
+        quotes[a["Ticker"]] = {
+            "ticker": a["Ticker"],
+            "name": a["CompanyName"],
+            "currency": (a["Currency"] or "USD").strip(),
+            "price": round(latest[1], 4) if latest else None,
+            "price_date": latest[0].isoformat() if latest else None,
+            "previous_close": round(prev[1], 4) if prev else None,
+            "previous_close_date": prev[0].isoformat() if prev else None,
+            "score": None if score is None else round(score, 1),  # display value
+            "score_exact": None if score is None else round(score, 4),
+            "signal": signal_label(score) if score is not None else None,
+            "freshness": {
+                "price_date": latest[0].isoformat() if latest else None,
+                "prices_fetched_at": _utc(fetched),
+                "price_age_days": price_age,
+                # Bars are end-of-day: a long weekend is fine, older than that is flagged.
+                "price_stale": price_age is None or price_age > FX_STALE_AFTER_DAYS,
+                "score_computed_at": _utc(score_row["ComputedAt"]) if score_row else None,
+            },
+        }
+    known = set(quotes)
+    return {"quotes": quotes, "unknown": [t for t in tickers if t not in known]}

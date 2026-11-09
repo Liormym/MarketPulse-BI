@@ -240,6 +240,15 @@ python webapp/app.py
 
 Visit **http://localhost:5050** — the Market Dashboard loads at `/`, and any ticker's deep-dive view is at `/stock/<TICKER>`.
 
+### My Portfolio (`/portfolio`)
+
+A local portfolio tracker with a **stateless** server. Holdings (`[{ticker, avg_price, quantity}]`) are stored only in the browser's `localStorage` (key `marketpulse.portfolio.v1`); the server never receives or stores quantities or buy prices. The page asks it for two things:
+
+- `GET /api/fx`: the latest USD/ILS rate (`rate` = ILS per 1 USD) with `as_of`, `fetched_at`, `age_days` and a `stale` flag.
+- `POST /api/portfolio/quotes` with `{"tickers": ["AAPL", "BEZQ.TA"]}` (up to 100 bare tickers; anything else in the body is ignored): per ticker the company name, native `currency` (USD for US names, ILS for TASE, agorot already converted), latest `price` and `previous_close` (with their dates), the exact cached v2 Quant Score (`score` to 1 decimal, `score_exact` to 4) with its signal label, and `freshness` (`price_age_days`, `price_stale`, `prices_fetched_at`, `score_computed_at`). Tickers not in the database come back under `unknown`.
+
+Total value, daily change and total return are computed in the browser. A USD/ILS toggle converts values and amounts at **today's** rate (so Total Return for foreign assets ignores the FX move since purchase, and the page says so); Daily change and Total return always show the percentage and the absolute amount side by side. Rows link to `/stock/<ticker>`; add/edit/remove uses the same ticker auto-complete as the stock search. Storage errors (private mode, quota) are caught and the page keeps working in memory with a warning.
+
 ---
 
 ## Daily Automation (End-of-Day Pipeline)

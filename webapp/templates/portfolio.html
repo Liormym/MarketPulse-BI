@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MarketPulse BI — My Portfolio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ asset_url('css/style.css') }}">
+
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#090b10">
+  <link rel="icon" href="{{ url_for('static', filename='icons/favicon-32.png') }}" type="image/png">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MarketPulse">
+
+  <script src="{{ asset_url('js/register-sw.js') }}" defer></script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="brand">
+          <span class="brand-mark">MP</span>
+          <span class="brand-name">MarketPulse<strong>BI</strong></span>
+        </div>
+        <nav class="nav-links">
+          <a class="nav-link" href="/">Dashboard</a>
+          <a class="nav-link" href="/stock/AAPL">Stock Deep-Dive</a>
+          <a class="nav-link active" href="/portfolio">My Portfolio</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="pf-head">
+        <div>
+          <h1 class="pf-title">My Portfolio</h1>
+          <p class="pf-sub">Your holdings are saved only in this browser (localStorage). The server never sees your quantities or buy prices: it is only asked for today's price, previous close and score of each ticker.</p>
+        </div>
+        <div class="pf-controls">
+          <div class="pf-ccy" role="group" aria-label="Display currency">
+            <button type="button" class="pf-ccy-btn" data-ccy="USD" aria-pressed="true">$ USD</button>
+            <button type="button" class="pf-ccy-btn" data-ccy="ILS" aria-pressed="false">₪ ILS</button>
+          </div>
+          <button type="button" class="pf-btn" id="pf-refresh" title="Fetch the latest prices again">↻ Refresh</button>
+          <button type="button" class="pf-btn pf-btn-primary" id="pf-add">+ Add holding</button>
+        </div>
+      </section>
+
+      <div class="pf-banner pf-banner-warn" id="pf-storage-warning" hidden role="alert">
+        Browser storage is unavailable (private mode or blocked), so your holdings will be lost when you close this tab.
+      </div>
+      <div class="pf-banner" id="pf-status" hidden role="status"></div>
+
+      <section class="pf-summary" id="pf-summary" aria-label="Portfolio totals">
+        <div class="pf-card pf-card-total">
+          <div class="pf-card-label">Total portfolio value</div>
+          <div class="pf-card-value" id="pf-total-value">—</div>
+          <div class="pf-card-note" id="pf-fx-note"></div>
+        </div>
+        <div class="pf-card">
+          <div class="pf-card-label">Daily change</div>
+          <div class="pf-dual" id="pf-total-daily"><span class="pf-pct">—</span><span class="pf-amt"></span></div>
+        </div>
+        <div class="pf-card">
+          <div class="pf-card-label">Total return</div>
+          <div class="pf-dual" id="pf-total-return"><span class="pf-pct">—</span><span class="pf-amt"></span></div>
+        </div>
+        <div class="pf-card">
+          <div class="pf-card-label">Holdings</div>
+          <div class="pf-card-value pf-card-value-sm" id="pf-count">0</div>
+          <div class="pf-card-note" id="pf-asof"></div>
+        </div>
+      </section>
+
+      <p class="pf-disclaimer" id="pf-disclaimer">Total Return for foreign assets is calculated using today's exchange rate, not the historical rate at purchase. The Quant Score is a diagnostic snapshot, not investment advice.</p>
+
+      <section class="pf-list-wrap" aria-label="Holdings">
+        <div class="pf-list-head" aria-hidden="true">
+          <span>Holding</span><span class="r">Quantity</span><span class="r">Avg buy</span><span class="r">Price</span>
+          <span class="r">Value</span><span class="r">Daily change</span><span class="r">Total return</span><span class="r">Score</span><span></span>
+        </div>
+        <div id="pf-list">
+          <div class="empty-state">Loading…</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="pf-dialog" class="pf-dialog" aria-labelledby="pf-dialog-title">
+    <form method="dialog" id="pf-form" autocomplete="off" novalidate>
+      <h2 id="pf-dialog-title">Add holding</h2>
+
+      <label class="pf-field">
+        <span>Ticker</span>
+        <input id="pf-f-ticker" type="text" list="pf-ticker-list" placeholder="Search ticker or company…" spellcheck="false" autocapitalize="characters">
+        <small id="pf-f-ticker-hint">Pick a ticker from the list.</small>
+      </label>
+      <datalist id="pf-ticker-list">
+        {% for t in tickers %}
+        <option value="{{ t.ticker }}" data-ccy="{{ t.currency|trim }}">{{ t.name }}</option>
+        {% endfor %}
+      </datalist>
+
+      <div class="pf-field-row">
+        <label class="pf-field">
+          <span>Quantity</span>
+          <input id="pf-f-qty" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 10">
+        </label>
+        <label class="pf-field">
+          <span id="pf-f-price-label">Average buy price</span>
+          <input id="pf-f-price" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 150.25">
+        </label>
+      </div>
+      <p class="pf-form-error" id="pf-form-error" role="alert" hidden></p>
+
+      <div class="pf-dialog-actions">
+        <button type="button" class="pf-btn pf-btn-danger" id="pf-f-remove" hidden>Remove</button>
+        <span class="pf-spacer"></span>
+        <button type="button" class="pf-btn" id="pf-f-cancel">Cancel</button>
+        <button type="submit" class="pf-btn pf-btn-primary" id="pf-f-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="{{ asset_url('js/portfolio.js') }}"></script>
+</body>
+</html>
