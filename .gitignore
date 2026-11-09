@@ -8,3 +8,12 @@ data/raw/
 *.egg-info/
 models_cache/
 .claude/
+
+# Generated marketing media: never commit video, frame sequences or captured stills
+*.mp4
+*.mov
+reports/
+marketing/promo_animation/output/
+marketing/promo_animation/assets/app_shots/
+marketing/promo_animation/assets/screenshots/
+marketing/promo_animation/assets/clips/
