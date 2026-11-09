@@ -985,6 +985,7 @@ a.driver-title:hover { color: var(--accent); text-decoration: underline; }
 .rot-metric { display: flex; flex-direction: column; align-items: flex-end; font-family: var(--font-mono); line-height: 1.25; }
 .rot-metric em { font-style: normal; font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
 .rot-metric b { font-size: 13px; font-weight: 700; }
+.rot-metric small { font-size: 10px; font-weight: 600; opacity: 0.85; }
 .rot-regime {
   justify-self: end; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px;
   text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap;

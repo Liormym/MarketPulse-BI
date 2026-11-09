@@ -18,7 +18,7 @@ def _data(universe):
     )
 
 
-SECTOR = dict(flow_status="Distribution", rel_20d_pct=-5.0, rel_2d_pct=-3.0, rel_5d_pct=-6.0, breadth_pct=10.0)
+SECTOR = dict(flow_status="Distribution", rel_20d_pct=-5.0, rel_2d_pct=-3.0, rel_5d_pct=-6.0, breadth_pct=10.0, breadth_median_pct=60.0)
 ENRICHMENT = dict(short_percent_of_float=0.25, insider_net="selling")
 
 
@@ -38,5 +38,6 @@ def test_us_kwargs_pass_everything_through():
     kw = db.build_score_kwargs(_data("sp500"), SECTOR, ENRICHMENT)
     assert kw["sector_na_reason"] is None
     assert (kw["sector_rel_2d_pct"], kw["sector_rel_5d_pct"], kw["sector_breadth_pct"]) == (-3.0, -6.0, 10.0)
+    assert kw["sector_breadth_median_pct"] == 60.0
     assert kw["short_percent_of_float"] == 0.25 and kw["insider_net"] == "selling"
     assert compute_investment_score(**kw).flags.get("sector_outflow") is True

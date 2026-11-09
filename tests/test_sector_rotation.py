@@ -6,6 +6,7 @@ from marketpulse.sector_rotation import (
     REGIME_INFLOW,
     REGIME_OUTFLOW,
     align_closes,
+    breadth_median,
     compute_sector_rotation_rows,
     count_breadth,
     relative_return_pp,
@@ -140,3 +141,57 @@ def test_stored_rotation_is_measured_against_rsp_not_the_sp500():
                     assert xlk["rel_5d_pct"] != pytest.approx(got, abs=0.01)
         finally:
             trans.rollback()
+
+
+# ---- breadth is relative to the cross-sector median ----
+def test_breadth_median_needs_enough_sectors():
+    assert breadth_median([10.0, 50.0, None, 90.0, 70.0, 30.0]) == 50.0
+    assert breadth_median([10.0, 20.0, 30.0, 40.0, 50.0, 60.0]) == 35.0  # even count: mean of the middle two
+    assert breadth_median([10.0, 20.0, 30.0, 40.0]) is None  # below MIN_SECTORS_FOR_MEDIAN
+    assert breadth_median([None] * 11) is None
+
+
+def test_a_broad_up_day_is_not_an_inflow_for_a_sector_that_merely_keeps_pace():
+    """85% of the sector's stocks rose, but the median sector had 92%: on the absolute gate this
+    is 'more advancers than decliners' (an inflow); relative to the median it is lagging breadth."""
+    assert rotation_signal(2.0, 4.0, 85.0).regime == REGIME_INFLOW  # absolute fallback (no median)
+    assert rotation_signal(2.0, 4.0, 85.0, breadth_median_pct=92.0).regime == REGIME_BALANCED
+    assert rotation_signal(2.0, 4.0, 98.0, breadth_median_pct=80.0).regime == REGIME_INFLOW
+
+
+def test_a_broad_down_day_does_not_make_the_least_bad_sector_an_outflow():
+    """Only 20% of the sector's stocks rose on a day the median sector had 10%: breadth is above
+    the median, so the sector is not in a confirmed outflow even though most of its stocks fell."""
+    assert rotation_signal(-2.0, -4.0, 20.0).regime == REGIME_OUTFLOW  # absolute fallback
+    assert rotation_signal(-2.0, -4.0, 20.0, breadth_median_pct=10.0).regime == REGIME_BALANCED
+    assert rotation_signal(-2.0, -4.0, 5.0, breadth_median_pct=30.0).regime == REGIME_OUTFLOW
+
+
+def test_breadth_edge_is_scaled_by_its_own_band():
+    from marketpulse.sector_rotation import ROTATION_BAND_BREADTH_VS_MEDIAN_PP
+
+    full = rotation_signal(0.0, 0.0, 50.0 + ROTATION_BAND_BREADTH_VS_MEDIAN_PP, breadth_median_pct=50.0)
+    assert full.score == pytest.approx(0.25)  # only the breadth leg (weight 0.25) is at full strength
+
+
+def test_rows_carry_the_cross_sector_median_and_use_it_for_the_regime():
+    """Eleven sectors on one day; every sector's stocks mostly rose, XLK a bit less. XLK trails RSP
+    on 2d AND 5d, but its breadth (70%) is only just under a ~90% median, so a mild lagger can be
+    balanced while a real laggard (breadth far below the median) is an outflow."""
+    from marketpulse.sector_flow import SECTOR_SPDR_TICKERS
+
+    dates = list(range(20260101, 20260131))
+    bench = [(d, 100.0) for d in dates]
+    sector = {t: [(d, 100.0) for d in dates] for t in SECTOR_SPDR_TICKERS}
+    sector["XLK"] = [(d, 100.0 - 0.5 * i) for i, d in enumerate(dates)]  # steady relative decline
+    as_of = dates[-1]
+
+    def stocks(up, down):
+        return {k: [(as_of - 1, 10.0), (as_of, 11.0 if k < up else 9.0)] for k in range(up + down)}
+
+    by_sector = {t: stocks(18, 2) for t in SECTOR_SPDR_TICKERS}  # 90% advancing everywhere
+    by_sector["XLK"] = stocks(14, 6)  # 70%
+    rows = {r["ticker"]: r for r in compute_sector_rotation_rows(sector, bench, by_sector)}
+    assert rows["XLK"]["breadth_median_pct"] == 90.0 and rows["XLB"]["breadth_median_pct"] == 90.0
+    assert rows["XLK"]["regime"] == REGIME_OUTFLOW  # -20 pts vs the median = full-strength breadth leg
+    assert rows["XLB"]["regime"] == REGIME_BALANCED  # flat vs RSP, breadth at the median

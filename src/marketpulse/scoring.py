@@ -240,6 +240,7 @@ def _sector_items(
     breadth_pct: float | None,
     flags: dict,
     na_reason: str | None = None,
+    breadth_median_pct: float | None = None,
 ) -> list[ScoreItem]:
     """Pillar 3, sector half (15 pts). Every component counts as neutral when its
     data is missing, so a stock is never marked down for a gap in OUR data."""
@@ -266,13 +267,18 @@ def _sector_items(
             )
         )
 
-    reading = rotation_signal(rel_2d_pct, rel_5d_pct, breadth_pct)
+    reading = rotation_signal(rel_2d_pct, rel_5d_pct, breadth_pct, breadth_median_pct)
     if reading.score is None:
         items.append(ScoreItem("sector", PTS_SECTOR_ROTATION_MAX / 2, PTS_SECTOR_ROTATION_MAX, "Short-term sector rotation (2d/5d vs RSP, breadth): no data, counted as neutral"))
         return items
 
     pts = PTS_SECTOR_ROTATION_MAX * (0.5 + 0.5 * reading.score)
-    breadth_text = f"{breadth_pct:.0f}% of its stocks advancing" if breadth_pct is not None else "breadth unavailable"
+    if breadth_pct is None:
+        breadth_text = "breadth unavailable"
+    elif breadth_median_pct is None:
+        breadth_text = f"{breadth_pct:.0f}% of its stocks advancing"
+    else:
+        breadth_text = f"{breadth_pct:.0f}% of its stocks advancing ({breadth_pct - breadth_median_pct:+.0f} pts vs the median sector)"
     items.append(
         ScoreItem(
             "sector", pts, PTS_SECTOR_ROTATION_MAX,
@@ -286,8 +292,8 @@ def _sector_items(
         items.append(
             ScoreItem(
                 "sector", -ROTATION_OUTFLOW_DEDUCTION, ROTATION_OUTFLOW_DEDUCTION,
-                "Early-rotation deduction: the sector lags the equal-weight S&P 500 (RSP) over 2 AND 5 days with more decliners than "
-                "advancers, a confirmed capital outflow",
+                "Early-rotation deduction: the sector lags the equal-weight S&P 500 (RSP) over 2 AND 5 days with weaker breadth than "
+                "the median sector, a confirmed capital outflow",
             )
         )
     elif reading.regime == REGIME_INFLOW:
@@ -376,6 +382,7 @@ def compute_investment_score(
     sector_rel_2d_pct: float | None = None,
     sector_rel_5d_pct: float | None = None,
     sector_breadth_pct: float | None = None,
+    sector_breadth_median_pct: float | None = None,
     sector_na_reason: str | None = None,
     short_percent_of_float: float | None = None,
     insider_net: str | None = None,
@@ -394,7 +401,7 @@ def compute_investment_score(
     momentum = _momentum_items(rsi14, rsi14_prev, flags)
     sector = _sector_items(
         sector_flow_status, sector_rel_20d_pct, sector_rel_2d_pct, sector_rel_5d_pct, sector_breadth_pct, flags,
-        na_reason=sector_na_reason,
+        breadth_median_pct=sector_breadth_median_pct, na_reason=sector_na_reason,
     )
     risk = _risk_items(trend_pts, short_percent_of_float, atr14, atr_90d_avg, atr_90d_std, flags)
     insider = _insider_item(insider_net, flags)

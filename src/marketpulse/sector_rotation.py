@@ -8,7 +8,8 @@ series already in MacroIndicators.RSPPrice):
     2-day relative return    sector ETF return minus the benchmark return, in
     5-day relative return    percentage points, over the last 2 / 5 trading bars
     breadth                  % of the sector's S&P 1500 stocks that rose on the
-                             day (advancers / (advancers + decliners))
+                             day (advancers / (advancers + decliners)), measured
+                             AGAINST THE CROSS-SECTOR MEDIAN breadth (see below)
 
 plus the 20-day relative return (the medium-term trend, kept for the score).
 
@@ -19,6 +20,13 @@ data (2026-11-04): against the S&P 500 the average sector showed +2.6pp over 5 d
 +6.1pp over 20, with 9 of 11 sectors "leading"; against RSP the average is -0.2pp / -0.7pp
 (7 and 6 of 11), i.e. the signal is sector flow, not mega-cap drag. A cross-sector median
 was rejected: it forces a fixed ~5/11 split every day and is skewed (mean -1.5pp).
+
+WHY BREADTH IS RELATIVE. Raw breadth is an absolute gate: on a day when 85-95% of all
+stocks rise, almost every sector clears "more advancers than decliners" and the engine
+calls six of eleven sectors an inflow, which is a market-wide up day, not a rotation.
+Rotation is a RELATIVE move, so breadth is taken as the sector's advancing share minus the
+median advancing share across the sectors that day (a sector at 70% on a day the median is
+85% is lagging in breadth). The raw percentage is still stored and shown.
 
 rotation_signal() blends the three short-term inputs into one number from -1
 (aggressive outflow) to +1 (aggressive inflow) and, only when all three AGREE,
@@ -45,10 +53,13 @@ BARS_2D, BARS_5D, BARS_20D = 2, 5, 20
 ROTATION_BAND_2D_PP = 1.5
 ROTATION_BAND_5D_PP = 3.0
 # Breadth this many points away from 50% advancing is a full-strength signal.
-ROTATION_BAND_BREADTH_PP = 25.0
+ROTATION_BAND_BREADTH_PP = 25.0  # absolute fallback (no cross-sector median available)
+# Breadth this many points above/below the cross-sector median is a full-strength signal.
+ROTATION_BAND_BREADTH_VS_MEDIAN_PP = 20.0
 ROTATION_WEIGHTS = {"rel_2d": 0.35, "rel_5d": 0.40, "breadth": 0.25}
 REGIME_SCORE_THRESHOLD = 0.35  # |signal| needed, on top of the agreement rules, to name a regime
 MIN_BREADTH_STOCKS = 5  # below this many movers the breadth percentage is too noisy to use
+MIN_SECTORS_FOR_MEDIAN = 5  # fewer sectors with a breadth read than this: no median, absolute 50% centre
 
 REGIME_INFLOW, REGIME_OUTFLOW, REGIME_BALANCED = "inflow", "outflow", "balanced"
 REGIME_LABELS = {
@@ -71,30 +82,57 @@ def _clamp(x: float, low: float, high: float) -> float:
     return max(low, min(high, x))
 
 
-def rotation_signal(rel_2d_pp: float | None, rel_5d_pp: float | None, breadth_pct: float | None) -> RotationReading:
+def breadth_median(breadths) -> float | None:
+    """Median advancing share across the sectors that have a breadth read; None
+    when too few sectors do (the signal then falls back to the absolute 50% centre)."""
+    vals = sorted(b for b in breadths if b is not None)
+    if len(vals) < MIN_SECTORS_FOR_MEDIAN:
+        return None
+    mid = len(vals) // 2
+    return vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2.0
+
+
+def rotation_signal(
+    rel_2d_pp: float | None,
+    rel_5d_pp: float | None,
+    breadth_pct: float | None,
+    breadth_median_pct: float | None = None,
+) -> RotationReading:
     """Blend the short-term inputs into -1..+1 and name the regime.
 
     Both relative returns are required (without them there is no read at all).
     Breadth is optional: when missing the other two are re-weighted, but then a
-    regime can never be named, because "negative breadth" is part of the
-    definition of an aggressive outflow."""
+    regime can never be named, because breadth is part of the definition of a
+    rotation. With `breadth_median_pct` the breadth leg is the sector's advancing
+    share relative to the cross-sector median (the rotation read); without it the
+    leg is relative to an absolute 50%."""
     if rel_2d_pp is None or rel_5d_pp is None:
         return RotationReading(None, None)
+
+    if breadth_pct is None:
+        breadth_edge = None
+        band = ROTATION_BAND_BREADTH_PP
+    elif breadth_median_pct is None:
+        breadth_edge = breadth_pct - 50.0
+        band = ROTATION_BAND_BREADTH_PP
+    else:
+        breadth_edge = breadth_pct - breadth_median_pct
+        band = ROTATION_BAND_BREADTH_VS_MEDIAN_PP
 
     parts = [
         (ROTATION_WEIGHTS["rel_2d"], _clamp(rel_2d_pp / ROTATION_BAND_2D_PP, -1.0, 1.0)),
         (ROTATION_WEIGHTS["rel_5d"], _clamp(rel_5d_pp / ROTATION_BAND_5D_PP, -1.0, 1.0)),
     ]
-    if breadth_pct is not None:
-        parts.append((ROTATION_WEIGHTS["breadth"], _clamp((breadth_pct - 50.0) / ROTATION_BAND_BREADTH_PP, -1.0, 1.0)))
+    if breadth_edge is not None:
+        parts.append((ROTATION_WEIGHTS["breadth"], _clamp(breadth_edge / band, -1.0, 1.0)))
     total_weight = sum(w for w, _ in parts)
     score = sum(w * s for w, s in parts) / total_weight
 
     regime = REGIME_BALANCED
-    if breadth_pct is not None:
-        if score <= -REGIME_SCORE_THRESHOLD and rel_2d_pp < 0 and rel_5d_pp < 0 and breadth_pct < 50.0:
+    if breadth_edge is not None:
+        if score <= -REGIME_SCORE_THRESHOLD and rel_2d_pp < 0 and rel_5d_pp < 0 and breadth_edge < 0:
             regime = REGIME_OUTFLOW
-        elif score >= REGIME_SCORE_THRESHOLD and rel_2d_pp > 0 and rel_5d_pp > 0 and breadth_pct > 50.0:
+        elif score >= REGIME_SCORE_THRESHOLD and rel_2d_pp > 0 and rel_5d_pp > 0 and breadth_edge > 0:
             regime = REGIME_INFLOW
     return RotationReading(round(score, 4), regime)
 
@@ -150,7 +188,7 @@ def compute_sector_rotation_rows(
     stock_rows_by_sector   {spdr ticker: {asset_key: [(DateKey, close), ...] oldest first}}
     Returns one dict per sector ETF that has enough aligned history, for the
     latest date the ETF and the index share."""
-    out = []
+    prepared = []
     for ticker in SECTOR_SPDR_TICKERS:
         dates, s_closes, b_closes = align_closes(sector_closes.get(ticker, []), benchmark)
         if len(dates) <= BARS_2D:
@@ -163,11 +201,15 @@ def compute_sector_rotation_rows(
             if idx is not None and idx > 0 and series[idx - 1][1]:
                 movers.append((series[idx][1], series[idx - 1][1]))
         advancing, declining, breadth = count_breadth(movers)
+        prepared.append((ticker, as_of, s_closes, b_closes, advancing, declining, breadth))
 
+    median = breadth_median(p[6] for p in prepared)
+    out = []
+    for ticker, as_of, s_closes, b_closes, advancing, declining, breadth in prepared:
         rel_2d = relative_return_pp(s_closes, b_closes, BARS_2D)
         rel_5d = relative_return_pp(s_closes, b_closes, BARS_5D)
         rel_20d = relative_return_pp(s_closes, b_closes, BARS_20D)
-        reading = rotation_signal(rel_2d, rel_5d, breadth)
+        reading = rotation_signal(rel_2d, rel_5d, breadth, median)
         out.append(
             {
                 "ticker": ticker,
@@ -178,6 +220,7 @@ def compute_sector_rotation_rows(
                 "advancing": advancing,
                 "declining": declining,
                 "breadth_pct": breadth,
+                "breadth_median_pct": median,
                 "rotation_score": reading.score,
                 "regime": reading.regime,
             }
@@ -245,13 +288,13 @@ def compute_and_store_sector_rotation(conn, lookback_days: int = 90) -> list[dic
                 """
                 INSERT INTO "FactSectorRotation"
                     ("AssetKey", "DateKey", "Rel2DPct", "Rel5DPct", "Rel20DPct", "Advancing", "Declining",
-                     "BreadthPct", "RotationScore", "Regime", "ComputedAt")
-                VALUES (:a, :dk, :r2, :r5, :r20, :adv, :dec, :b, :s, :regime, now())
+                     "BreadthPct", "BreadthMedianPct", "RotationScore", "Regime", "ComputedAt")
+                VALUES (:a, :dk, :r2, :r5, :r20, :adv, :dec, :b, :bm, :s, :regime, now())
                 ON CONFLICT ("AssetKey", "DateKey") DO UPDATE SET
                     "Rel2DPct" = EXCLUDED."Rel2DPct", "Rel5DPct" = EXCLUDED."Rel5DPct",
                     "Rel20DPct" = EXCLUDED."Rel20DPct", "Advancing" = EXCLUDED."Advancing",
                     "Declining" = EXCLUDED."Declining", "BreadthPct" = EXCLUDED."BreadthPct",
-                    "RotationScore" = EXCLUDED."RotationScore", "Regime" = EXCLUDED."Regime",
+                    "BreadthMedianPct" = EXCLUDED."BreadthMedianPct", "RotationScore" = EXCLUDED."RotationScore", "Regime" = EXCLUDED."Regime",
                     "ComputedAt" = now()
                 """
             ),
@@ -264,6 +307,7 @@ def compute_and_store_sector_rotation(conn, lookback_days: int = 90) -> list[dic
                 "adv": r["advancing"],
                 "dec": r["declining"],
                 "b": r["breadth_pct"],
+                "bm": r["breadth_median_pct"],
                 "s": r["rotation_score"],
                 "regime": r["regime"],
             },

@@ -245,7 +245,8 @@ async function loadSectorRotation() {
       const name = s.name.replace(/ Select Sector SPDR Fund$/, "");
       const half = Math.min(Math.abs(s.rotation_score), 1) * 50; // % of the track, from the centre line
       const breadth = s.breadth_pct == null ? "—" : `${s.breadth_pct.toFixed(0)}%`;
-      const movers = s.advancing == null ? "" : `${s.advancing} up / ${s.declining} down`;
+      const edge = s.breadth_pct == null || s.breadth_median_pct == null ? null : s.breadth_pct - s.breadth_median_pct;
+      const movers = s.advancing == null ? "" : `${s.advancing} up / ${s.declining} down` + (edge == null ? "" : ` (${edge >= 0 ? "+" : ""}${edge.toFixed(0)} pts vs the median sector, ${s.breadth_median_pct.toFixed(0)}%)`);
       row.innerHTML = `
         <span class="rot-rank">${i + 1}</span>
         <span class="rot-name"><strong>${escapeHtml(s.ticker)}</strong> ${escapeHtml(name)}</span>
@@ -255,7 +256,7 @@ async function loadSectorRotation() {
         </span>
         <span class="rot-metric rot-m2"><em>2d</em><b class="change-pct ${signCls(s.rel_2d_pct)}">${ppText(s.rel_2d_pct)}</b></span>
         <span class="rot-metric rot-m5"><em>5d</em><b class="change-pct ${signCls(s.rel_5d_pct)}">${ppText(s.rel_5d_pct)}</b></span>
-        <span class="rot-metric rot-mb" title="${movers}"><em>Breadth</em><b>${breadth}</b></span>
+        <span class="rot-metric rot-mb" title="${movers}"><em>Breadth</em><b>${breadth}</b>${edge == null ? "" : `<small class="${signCls(edge)}">${edge >= 0 ? "+" : ""}${edge.toFixed(0)}</small>`}</span>
         <span class="rot-regime ${REGIME_CLASS[s.regime] || "balanced"}">${escapeHtml(s.regime_label || "Balanced")}</span>`;
       return row;
     })

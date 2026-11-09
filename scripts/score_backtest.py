@@ -11,16 +11,23 @@ close, so there is no look-ahead on the signal bar.
 
 What is reconstructed faithfully (all trailing-only calculations):
   trend (SMA20/50/200), RSI-14 and its 5-bar change, ATR z-score, sector money
-  flow, sector 20-day return vs the S&P 500.
+  flow, and (variant "rotation", the default) the Early Sector Rotation Engine's
+  inputs exactly as production computes them: the sector SPDR's 2/5/20-bar return
+  vs RSP (equal-weight S&P 500), and breadth = advancing share of the sector's
+  S&P 1500 stocks that day, measured against the median sector's breadth.
+  Variant "legacy" is the pre-rotation score (20-day return vs ^GSPC, no
+  rotation inputs, so the 7-point rotation component is neutral for everyone):
+  running both on the same sample isolates what the rotation engine adds.
 What cannot be, and how it is handled (each is then NEUTRAL for every stock, so
 it cannot create a spurious spread):
   short interest: only a current snapshot exists -> neutral.
   CEO/CFO insider modifier: Form 4 data starts 2024-09-30 -> applied only from
     2024-12-31 (a full 90-day window); before that it is 0.
 Known biases (they flatter the score, so a weak result is NOT explained by them):
-  survivorship (today's watchlist/S&P 500 membership is used for all history).
+  survivorship (today's watchlist/S&P 500/400/600 membership is used for all history,
+  which also means historical breadth is computed over today's survivors only).
 
-Usage: PYTHONPATH=src .venv/bin/python scripts/score_backtest.py [--out reports]
+Usage: PYTHONPATH=src .venv/bin/python scripts/score_backtest.py [--out reports] [--variant rotation|legacy]
 """
 import argparse
 import json
@@ -40,6 +47,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from marketpulse.insider import net_insider_activity  # noqa: E402
 from marketpulse.load.db import get_engine  # noqa: E402
 from marketpulse.scoring import SECTOR_RELATIVE_BARS_DEFAULT, compute_investment_score  # noqa: E402
+from marketpulse.sector_rotation import BARS_2D, BARS_5D, BARS_20D, BREADTH_UNIVERSES, MIN_BREADTH_STOCKS, breadth_median  # noqa: E402
 from marketpulse.sector_flow import SECTOR_SPDR_TICKERS, SECTOR_TO_SPDR  # noqa: E402
 
 HORIZONS = {"1M": 21, "3M": 63, "6M": 126, "12M": 252}
@@ -49,6 +57,7 @@ FIRST_REBALANCE = "2005-01-31"
 INSIDER_COVERED_FROM = np.datetime64("2024-12-31")
 MIN_STOCKS_PER_DATE = 30
 WINDOWS = {"2005 to today": "2005-01-01", "2015 to today": "2015-01-01", "Dec 2024 to today (insider data)": "2024-12-01"}
+CACHE_DIR = ROOT / "reports"
 PILLARS = ["trend_pts", "momentum_pts", "sector_pts", "risk_pts", "insider_pts"]
 
 
@@ -75,11 +84,25 @@ def load_sp500(cache: Path) -> pd.Series:
     return s
 
 
+def load_rsp(cache: Path) -> pd.Series:
+    """RSP (S&P 500 Equal Weight ETF) closes since inception (2003-05), the same series
+    production reads into MacroIndicators.RSPPrice (yfinance, adjusted); cached like ^GSPC."""
+    if cache.exists():
+        return pd.read_csv(cache, index_col=0, parse_dates=True).iloc[:, 0]
+    import yfinance as yf
+
+    s = yf.Ticker("RSP").history(period="max", interval="1d")["Close"]
+    s.index = pd.to_datetime(s.index).tz_localize(None).normalize()
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    s.to_csv(cache, header=["close"])
+    return s
+
+
 def load(conn):
     prices = pd.read_sql(
         text(
             """
-            SELECT a."Ticker" AS ticker, a."Sector" AS sector, d."Date" AS date, p."Close" AS close,
+            SELECT a."Ticker" AS ticker, a."Sector" AS sector, a."Universe" AS universe, d."Date" AS date, p."Close" AS close,
                    t."SMA20" AS sma20, t."SMA50" AS sma50, t."SMA200" AS sma200, t."RSI14" AS rsi14,
                    t."ATR14" AS atr14, t."ATR90Avg" AS atr90avg, t."ATR90Std" AS atr90std
             FROM "FactDailyPrice" p
@@ -131,7 +154,42 @@ def load(conn):
     return prices, flows, etf, insiders
 
 
-def build_panel(prices, flows, etf, insiders, sp500):
+def build_rotation_inputs(prices, etf, rsp):
+    """Point-in-time Early Sector Rotation inputs, one DataFrame per sector SPDR indexed by
+    trading date: rel2/rel5/rel20 (sector return minus RSP return over the last n aligned
+    bars, percentage points), breadth (advancers / (advancers + decliners) over the sector's
+    S&P 1500 stocks that day, NaN below MIN_BREADTH_STOCKS movers) and median (the median
+    breadth across the sectors that day, NaN with fewer than 5 sectors). Mirrors
+    marketpulse.sector_rotation, but vectorised over every date. Trailing data only."""
+    bench = rsp[~rsp.index.duplicated()]
+    frames = {}
+    for spdr, g in etf.groupby("spdr"):
+        e = g.set_index(pd.to_datetime(g["date"]))["close"].astype(float)
+        e = e[~e.index.duplicated()]
+        both = pd.concat([e.rename("e"), bench.rename("r")], axis=1, join="inner").dropna()
+        both = both[(both["e"] > 0) & (both["r"] > 0)]
+        f = pd.DataFrame(index=both.index)
+        for name, n in (("rel2", BARS_2D), ("rel5", BARS_5D), ("rel20", BARS_20D)):
+            f[name] = ((both["e"] / both["e"].shift(n) - 1) - (both["r"] / both["r"].shift(n) - 1)) * 100.0
+        frames[spdr] = f
+
+    stk = prices[prices["universe"].isin(BREADTH_UNIVERSES) & prices["sector"].isin(SECTOR_TO_SPDR)]
+    wide = stk.pivot_table(index="date", columns="ticker", values="close", aggfunc="last")
+    wide.index = pd.to_datetime(wide.index)
+    delta = wide.diff()
+    spdr_of = stk.drop_duplicates("ticker").set_index("ticker")["sector"].map(SECTOR_TO_SPDR)
+    up = (delta > 0).astype(float).where(delta.notna()).T.groupby(spdr_of).sum().T
+    dn = (delta < 0).astype(float).where(delta.notna()).T.groupby(spdr_of).sum().T
+    movers = up + dn
+    breadth = (up / movers * 100.0).where(movers >= MIN_BREADTH_STOCKS)
+    median = breadth.apply(lambda row: breadth_median(row.dropna().tolist()) or np.nan, axis=1)
+    for spdr, f in frames.items():
+        f["breadth"] = breadth[spdr].reindex(f.index) if spdr in breadth else np.nan
+        f["median"] = median.reindex(f.index)
+    return frames
+
+
+def build_panel(prices, flows, etf, insiders, sp500, rsp=None, variant="rotation"):
     flow_dates, flow_status = {}, {}
     for spdr, g in flows.groupby("spdr"):
         flow_dates[spdr] = pd.to_datetime(g["date"]).values.astype("datetime64[D]")
@@ -143,6 +201,26 @@ def build_panel(prices, flows, etf, insiders, sp500):
         etf_close[spdr] = g["close"].to_numpy(float)
     sp_dates = sp500.index.values.astype("datetime64[D]")
     sp_close = sp500.to_numpy(float)
+
+    rotation = build_rotation_inputs(prices, etf, rsp) if variant == "rotation" else {}
+    rot_arrays = {
+        spdr: (f.index.values.astype("datetime64[D]"), {c: f[c].to_numpy(float) for c in f.columns})
+        for spdr, f in rotation.items()
+    }
+    rot_cache = {}
+
+    def rotation_at(spdr, day):
+        """Latest rotation inputs on or before `day` (None if the SPDR has none within 7 days)."""
+        key = (spdr, day)
+        if key not in rot_cache:
+            out = None
+            if spdr in rot_arrays:
+                d, cols = rot_arrays[spdr]
+                k = int(np.searchsorted(d, day, side="right")) - 1
+                if k >= 0 and (day - d[k]) <= np.timedelta64(7, "D"):
+                    out = {c: nz1(v[k]) for c, v in cols.items()}
+            rot_cache[key] = out
+        return rot_cache[key]
 
     def rel20(spdr, day):
         """Sector ETF 20-bar return minus S&P 500 20-bar return, in percentage points."""
@@ -203,6 +281,7 @@ def build_panel(prices, flows, etf, insiders, sp500):
             covered = dates[i] >= INSIDER_COVERED_FROM
             net = net_insider_activity(txns, today=pd.Timestamp(dates[i]).date())["net"] if covered else None
 
+            rot = rotation_at(spdr, dates[i]) if variant == "rotation" else None
             w = slice(i - 199, i + 1)
             r = compute_investment_score(
                 closes=close[w].tolist(),
@@ -215,7 +294,11 @@ def build_panel(prices, flows, etf, insiders, sp500):
                 atr_90d_avg=nz1(a_avg[i]),
                 atr_90d_std=nz1(a_std[i]),
                 sector_flow_status=status,
-                sector_rel_20d_pct=rel20(spdr, dates[i]),
+                sector_rel_20d_pct=rot["rel20"] if rot else (None if variant == "rotation" else rel20(spdr, dates[i])),
+                sector_rel_2d_pct=rot["rel2"] if rot else None,
+                sector_rel_5d_pct=rot["rel5"] if rot else None,
+                sector_breadth_pct=rot["breadth"] if rot else None,
+                sector_breadth_median_pct=rot["median"] if rot else None,
                 short_percent_of_float=None,  # not available point-in-time: neutral for everyone
                 insider_net=net,
             )
@@ -227,6 +310,8 @@ def build_panel(prices, flows, etf, insiders, sp500):
                 "trend_pts": r.trend_points, "momentum_pts": r.momentum_points, "sector_pts": r.sector_points,
                 "risk_pts": r.risk_points, "insider_pts": r.insider_points, "rsi14": nz1(rsi[i]) or np.nan,
                 "insider_net": net or "", "insider_covered": bool(covered),
+                "regime": "outflow" if r.flags.get("sector_outflow") else ("inflow" if r.flags.get("sector_inflow") else "balanced"),
+                "rot_known": rot is not None and rot["rel2"] is not None,
                 "entry_date": dates[e], "ret_to_latest": close[n - 1] / close[e] - 1, "latest_date": dates[n - 1],
             }
             for name, h in HORIZONS.items():
@@ -354,18 +439,61 @@ def insider_effect(panel):
     return pd.DataFrame(rows)
 
 
+def rotation_effect(panel):
+    """Do stocks in a sector the engine calls Inflow / Outflow behave differently over the
+    following month / quarter? Per rebalance date: mean excess return of each regime group
+    (excess = return minus that date's all-stock average), then averaged over dates;
+    Inflow-minus-Outflow spread with a Newey-West t-stat. Also how often each regime occurs."""
+    known = panel[panel["rot_known"]]
+    rows = []
+    for wname, start in WINDOWS.items():
+        sub = known[known["date"] >= start]
+        for h in HORIZONS:
+            ex = f"ex_{h}"
+            per = sub.dropna(subset=[ex]).groupby(["date", "regime"])[ex].agg(["mean", "count"]).reset_index()
+            per = per[per["count"] >= 5]
+            wide = per.pivot(index="date", columns="regime", values="mean")
+            if "inflow" not in wide or "outflow" not in wide:
+                continue
+            spread = (wide["inflow"] - wide["outflow"]).dropna()
+            rows.append({
+                "window": wname, "horizon": h, "dates": len(spread),
+                **{f"{g} mean excess %": 100 * wide[g].mean() for g in ("inflow", "balanced", "outflow") if g in wide},
+                "Inflow minus Outflow %": 100 * spread.mean(), "t_nw": nw_tstat(spread, NW_LAG[h]),
+                "pct_dates_inflow_wins": (spread > 0).mean(),
+            })
+    return pd.DataFrame(rows)
+
+
+def regime_frequency(panel):
+    """Share of (sector, rebalance date) pairs in each regime, and the average number of
+    sectors in Inflow / Outflow on a rebalance date (11 sectors)."""
+    known = panel[panel["rot_known"]].drop_duplicates(["date", "sector"])
+    share = known["regime"].value_counts(normalize=True).to_dict()
+    per_date = known.groupby(["date", "regime"]).size().unstack(fill_value=0)
+    return {"sector_dates": int(len(known)), "share": {k: float(v) for k, v in share.items()},
+            "avg_sectors_inflow": float(per_date.get("inflow", pd.Series([0])).mean()),
+            "avg_sectors_outflow": float(per_date.get("outflow", pd.Series([0])).mean()),
+            "avg_sectors_per_date": float(known.groupby("date").size().mean())}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="reports")
+    ap.add_argument("--variant", choices=("rotation", "legacy"), default="rotation",
+                    help="rotation: current score incl. the Early Sector Rotation Engine vs RSP; "
+                         "legacy: pre-rotation score (20d vs ^GSPC, rotation neutral)")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    stem = "score_v2" if args.variant == "legacy" else "score_v2_rotation"
 
-    sp500 = load_sp500(out / "_sp500_history.csv")
+    sp500 = load_sp500(CACHE_DIR / "_sp500_history.csv")
+    rsp = load_rsp(CACHE_DIR / "_rsp_history.csv") if args.variant == "rotation" else None
     with get_engine().connect() as conn:
         prices, flows, etf, insiders = load(conn)
-    panel = build_panel(prices, flows, etf, insiders, sp500)
-    panel.to_csv(out / "score_v2_panel.csv", index=False)
+    panel = build_panel(prices, flows, etf, insiders, sp500, rsp, args.variant)
+    panel.to_csv(out / f"{stem}_panel.csv", index=False)
 
     res = {
         "meta": {"stocks": int(panel["ticker"].nunique()), "observations": int(len(panel)),
@@ -375,15 +503,21 @@ def main():
         "ic": ic_table(panel), "bands": band_table(panel), "components": component_table(panel),
         "rsi": rsi_table(panel), "strong_by_rsi": strong_by_rsi(panel), "insider": insider_effect(panel),
     }
-    with open(out / "_results_v2.pkl", "wb") as f:
+    if args.variant == "rotation":
+        res["rotation_effect"] = rotation_effect(panel)
+        res["regime_frequency"] = regime_frequency(panel)
+    with open(out / f"_results_{stem}.pkl", "wb") as f:
         pickle.dump(res, f)
     json_safe = {k: (v.to_dict("records") if isinstance(v, pd.DataFrame) else v) for k, v in res.items()}
-    (out / "score_v2_backtest.json").write_text(json.dumps(json_safe, indent=2, default=str))
+    (out / f"{stem}_backtest.json").write_text(json.dumps(json_safe, indent=2, default=str))
 
     pd.set_option("display.width", 200, "display.max_columns", 20, "display.float_format", lambda v: f"{v:,.3f}")
     print(json.dumps(res["meta"], indent=2))
-    for k in ("ic", "bands", "components", "rsi", "insider"):
-        print(f"\n== {k}\n{res[k].to_string(index=False)}")
+    for k in ("ic", "bands", "components", "rsi", "insider", "rotation_effect"):
+        if k in res:
+            print(f"\n== {k}\n{res[k].to_string(index=False)}")
+    if "regime_frequency" in res:
+        print("\n== regime_frequency\n" + json.dumps(res["regime_frequency"], indent=2))
     print("\n== strong_by_rsi\n" + json.dumps(res["strong_by_rsi"], indent=2))
 
 

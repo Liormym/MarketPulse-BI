@@ -99,7 +99,7 @@ def main() -> None:
         fmt = lambda v, f: "  n/a" if v is None else format(v, f)  # noqa: E731
         print(
             f"  {r['ticker']:<5} 2d {fmt(r['rel_2d_pct'], '+.2f')}pp  5d {fmt(r['rel_5d_pct'], '+.2f')}pp  "
-            f"20d {fmt(r['rel_20d_pct'], '+.2f')}pp  breadth {fmt(r['breadth_pct'], '.0f')}% "
+            f"20d {fmt(r['rel_20d_pct'], '+.2f')}pp  breadth {fmt(r['breadth_pct'], '.0f')}% (median {fmt(r['breadth_median_pct'], '.0f')}%) "
             f"({r['advancing']}/{r['declining']})  signal {fmt(r['rotation_score'], '+.2f')}  "
             f"{REGIME_LABELS.get(r['regime'], '-')}"
         )

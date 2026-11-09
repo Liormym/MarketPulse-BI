@@ -195,6 +195,7 @@ def build_score_kwargs(data: dict, sector_flow: dict | None, enrichment: dict | 
         sector_rel_2d_pct=sector_flow["rel_2d_pct"] if sector_flow else None,
         sector_rel_5d_pct=sector_flow["rel_5d_pct"] if sector_flow else None,
         sector_breadth_pct=sector_flow["breadth_pct"] if sector_flow else None,
+        sector_breadth_median_pct=sector_flow.get("breadth_median_pct") if sector_flow else None,
         # Israeli stocks have no US sector ETF to compare against, no SEC insider
         # filings and no short-interest feed: fixed explicitly (not "whatever the
         # cache happens to hold") so the batch run, which never calls Yahoo for them,
@@ -347,7 +348,7 @@ def get_sector_flows() -> list[dict]:
         """
         SELECT DISTINCT ON (a."Ticker")
             a."Ticker", d."Date", r."Rel2DPct", r."Rel5DPct", r."Rel20DPct", r."Advancing", r."Declining",
-            r."BreadthPct", r."RotationScore", r."Regime"
+            r."BreadthPct", r."BreadthMedianPct", r."RotationScore", r."Regime"
         FROM "FactSectorRotation" r
         JOIN "DimAsset" a ON a."AssetKey" = r."AssetKey"
         JOIN "DimDate" d ON d."DateKey" = r."DateKey"
@@ -387,7 +388,7 @@ def _rotation_fields(r) -> dict:
     sector as neutral)."""
     if r is None:
         return {
-            "rel_2d_pct": None, "rel_5d_pct": None, "rel_20d_pct": None, "breadth_pct": None,
+            "rel_2d_pct": None, "rel_5d_pct": None, "rel_20d_pct": None, "breadth_pct": None, "breadth_median_pct": None,
             "advancing": None, "declining": None, "rotation_score": None, "regime": None,
             "regime_label": None, "rotation_as_of": None,
         }
@@ -396,6 +397,7 @@ def _rotation_fields(r) -> dict:
         "rel_5d_pct": r["Rel5DPct"],
         "rel_20d_pct": r["Rel20DPct"],
         "breadth_pct": r["BreadthPct"],
+        "breadth_median_pct": r["BreadthMedianPct"],
         "advancing": r["Advancing"],
         "declining": r["Declining"],
         "rotation_score": r["RotationScore"],

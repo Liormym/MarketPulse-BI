@@ -281,3 +281,14 @@ def test_score_is_continuous_so_near_identical_stocks_do_not_tie():
     assert a.score != b.score and b.score > a.score
     assert a.score != round(a.score)  # not an integer
     assert signal_label(69.6) == "Neutral / Mixed"  # bands use the exact value
+
+
+def test_score_text_reports_breadth_against_the_median_sector():
+    r = score(**_kw(sector_rel_2d_pct=-2.0, sector_rel_5d_pct=-4.0, sector_breadth_pct=40.0, sector_breadth_median_pct=60.0))
+    assert r.flags.get("sector_outflow")
+    assert any("-20 pts vs the median sector" in i.text for i in r.items if i.pillar == "sector")
+    # same inputs on the absolute gate (no median passed): 40% advancing is still < 50%, also an outflow
+    assert score(**_kw(sector_rel_2d_pct=-2.0, sector_rel_5d_pct=-4.0, sector_breadth_pct=40.0)).flags.get("sector_outflow")
+    # but a sector at 40% when the median sector is at 15% is NOT in outflow
+    ok = score(**_kw(sector_rel_2d_pct=-2.0, sector_rel_5d_pct=-4.0, sector_breadth_pct=40.0, sector_breadth_median_pct=15.0))
+    assert not ok.flags.get("sector_outflow")
